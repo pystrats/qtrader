@@ -1,0 +1,19 @@
+# Compiled python modules.
+*.pyc
+*.pyo
+
+# Setuptools distribution folder.
+/dist/
+
+# Setuptools build folder.
+/build/
+
+# Python egg metadata, regenerated from source files by setuptools.
+/*.egg-info
+
+# Server setup instructions
+*.setup-info
+
+# NumPy binaries, large datafiles
+*.npy
+/data/
