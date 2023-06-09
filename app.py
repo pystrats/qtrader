@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import (QMainWindow, QApplication, QPushButton, QWidget, QA
             QScrollArea, QShortcut, QAbstractButton, QDialogButtonBox, QFrame, QFileDialog)
 from PyQt5.QtGui import QIcon, QIntValidator, QFont, QPalette, QColor, QKeySequence, QCloseEvent, QFontDatabase
 from PyQt5.QtCore import Qt, pyqtSlot, QObject, QThread, pyqtSignal, QTimer, QTime
+from PyQt5.QtWebEngineWidgets import QWebEngineView
 
 import dash
 from dash import dcc, html
@@ -22,6 +23,7 @@ from completer import LineCompleterWidget
 from search import SearchWindow
 from msgboxes import InfoMessageBox, InfoWidget
 from watchlistitem import WatchlistItem
+from settings import Settings
 
 from ibapi.contract import Contract
 
@@ -36,7 +38,7 @@ class App(QMainWindow):
         self.left = 10
         self.top = 10
         self.width = 1280
-        self.height = 720
+        self.height = 1000
         self.showExitDialogue = True
         self.exitDialogueShown = False
         self.maximizeOnStartup = False
@@ -67,7 +69,7 @@ class App(QMainWindow):
         settingsButton = QAction(QIcon('exit24.png'), 'Settings', self)
         settingsButton.setShortcut('Ctrl+S')
         settingsButton.setStatusTip('Settings')
-        settingsButton.triggered.connect(self.show_new_window)
+        settingsButton.triggered.connect(self.show_settings)
         fileMenu.addAction(settingsButton)
 
         exportWatchlistButton = QAction(QIcon(), 'Export Watchlist', self)
@@ -123,6 +125,16 @@ class App(QMainWindow):
         viewMenu.addAction(chartButton)
 
         self.show()
+
+    def show_settings(self):
+        self.settingsWindow = Settings()
+        self.settingsWindow.success.connect(self.settings_saved, Qt.DirectConnection)
+        self.settingsWindow.show()
+
+    def settings_saved(self, success):
+        if success:
+            msgBox = InfoMessageBox('Info', 'Saved')
+        else: msgBox = InfoMessageBox('Error', 'An error occurred. Settings could not be saved.')
 
     def watchlistToJSON(self, watchlist):
         d = {}
@@ -457,7 +469,7 @@ class Worker(QObject, Connection):
             else: self.symbolInfo.emit(0, 0)
         # signalEmitted.emit()
 
-    def error(self, reqId, errorCode, errorString, advancedOrderRejectJson):
+    def error(self, reqId, errorCode, errorString, advancedOrderRejectJson=None):
         if errorCode == 502:
             self.emit_error.emit(errorCode, errorString)
         super().error(reqId, errorCode, errorString, advancedOrderRejectJson)
@@ -612,6 +624,7 @@ class TableWidget(QWidget):
     symInfoRequested = pyqtSignal(str, int)
     connectionEstablished = pyqtSignal(int)
     status_message = pyqtSignal(str)
+    sendMktStateToWatchlist = pyqtSignal(int)
 
     def __init__(self, parent):
         super(QWidget, self).__init__(parent)
@@ -629,9 +642,44 @@ class TableWidget(QWidget):
         # c2 = Contract()
         # c2.symbol = 'MSFT'
         # c2.primaryExchange = 'NASDAQ'
+        self.todaysHolidayKnown = False
+        self.holidays = {}
+        self.readHolidaysFile()
+        self.lastKnownDay = -1
+        self.sessionToday = {
+            'premarketOpen' : 40000,
+            'premarketClose' : 90000,
+            'marketOpen' : 90000,
+            'marketClose' : 160000,
+            'aftermarketOpen' : 160000,
+            'aftermarketClose' : 200000
+        }
+        self.todaysHolidayName = ''
+        self.isHoliday = False
+        self.holidayName = ''
+        self.closedAllDay = False
         self.watchlist = {}
         self.watchlistItems = {}
+        self.dir = os.path.dirname(os.path.abspath(__file__))
         self.layout = QGridLayout(self)
+
+        self.gaugePanel = QWidget()
+        self.gaugePanelLayout = QVBoxLayout()
+        self.browser = QWebEngineView()
+        self.gaugePanelLayout.addWidget(self.browser)
+        self.gaugePanel.setLayout(self.gaugePanelLayout)
+        self.gaugePanel.setMaximumHeight(160)
+        self.gaugePanel.setFixedWidth(1120)
+        self.gaugePanelHTML = ''
+        with open(self.dir+'/html/gauge.html', 'r') as file:
+            html = file.read()
+            self.gaugePanelHTML = html
+        self.browser.setHtml(self.gaugePanelHTML.replace(
+            "gaugeReading", "25"
+        ).replace(
+            "risk_value", "1250"
+        ))
+
 
         # Initialize tab screen
         self.tabs = QTabWidget()
@@ -660,6 +708,7 @@ class TableWidget(QWidget):
         self.tab1.scrollContent.setLayout(self.tab1.scrollLayout)
         self.tab1.w = QWidget()
         self.tab1.layout = QGridLayout()
+        self.tab1.layout.setAlignment(Qt.AlignTop)
         self.tab1.w.setLayout(self.tab1.layout)
         self.tab1.scrollLayout.addWidget(self.tab1.w)
         self.tab1.scroll.setWidget(self.tab1.scrollContent)
@@ -735,17 +784,26 @@ class TableWidget(QWidget):
         self.clock.setLayout(self.clockLayout)
 
         self.mktStatusWidget = QWidget()
+        self.mktStatusTable = QGridLayout()
+        self.mktStatusTable.setContentsMargins(0, 5, 0, 0)
         # self.mktStatusWidget.setFixedHeight(28)
         self.mktStatusLayout = QHBoxLayout()
         self.mktStatusLayout.setAlignment(Qt.AlignTop|Qt.AlignRight)
-        self.mktStatusLayout.setContentsMargins(0, 5, 0, 0)
         self.mktStatusLabel = QLabel('')
         self.mktStatus = QLabel('')
         self.mktStatusLayout.addWidget(self.mktStatusLabel, alignment=Qt.AlignTop|Qt.AlignRight)
+        self.mktStatusTable.addLayout(self.mktStatusLayout, 0, 0, 1, 1, alignment=Qt.AlignRight|Qt.AlignTop)
+        self.holidayLayout = QHBoxLayout()
+        self.holidayLayout.setAlignment(Qt.AlignTop|Qt.AlignRight)
+        self.holidayLabel = QLabel('')
+        self.holidayLabel.setStyleSheet("QLabel{color: #aaaaaa;}")
+        # self.holidayLayout.addWidget(self.holidayLabel)
+        self.mktStatusTable.addWidget(self.holidayLabel, 1, 0, 1, 1, alignment=Qt.AlignRight|Qt.AlignTop)
         # self.mktStatusLayout.addWidget(self.mktStatus, alignment=Qt.AlignTop|Qt.AlignRight)
-        self.mktStatusWidget.setLayout(self.mktStatusLayout)
+        self.mktStatusWidget.setLayout(self.mktStatusTable)
         self.mktState = 0
         self.prevMktState = -1
+
 
 
         self.tab1.layout.addLayout(self.buttonPanel, 0, 3, alignment=Qt.AlignRight)
@@ -753,8 +811,9 @@ class TableWidget(QWidget):
         self.tab1.layout.addWidget(self.searchButton, 0, 1)
         self.tab1.layout.addWidget(self.clock, 1, 3, 1, 1, alignment=Qt.AlignRight|Qt.AlignTop)
         self.tab1.layout.addWidget(self.mktStatusWidget, 2, 3, 1, 1, alignment=Qt.AlignRight|Qt.AlignTop)
-        self.tab1.layout.addWidget(self.watchlistWidget, 3, 0, 20, 4, alignment=Qt.AlignTop|Qt.AlignCenter)
-        self.tab1.layout.addWidget(Empty('white'), 4, 0, 1, 4)
+        self.tab1.layout.addWidget(self.gaugePanel, 3, 0, 1, 4, alignment=Qt.AlignCenter|Qt.AlignTop)
+        self.tab1.layout.addWidget(self.watchlistWidget, 4, 0, 20, 4, alignment=Qt.AlignTop|Qt.AlignCenter)
+        # self.tab1.layout.addWidget(Empty('white'), 4, 0, 1, 4)
         # self.tab1.layout.addWidget(self.connectButton, 0, 8, 1, 3)
         # self.tab1.layout.addWidget(self.startButton, 0, 11, 1, 3)
         # self.tab1.layout.addWidget(self.stopButton, 0, 14, 1, 3, alignment=Qt.AlignRight)
@@ -855,6 +914,24 @@ class TableWidget(QWidget):
         self.timeInfoReady = True
         self.status_message.emit('')
 
+    def readHolidaysFile(self):
+        path = '{}/{}/{}'.format( os.path.dirname(os.path.abspath(__file__)), 'config', 'holidays.json' )
+        if os.path.isfile(path):
+            with open(path) as f:
+                holidays = json.load(f)
+                self.holidays = {}
+                for name, details in holidays.items():
+                    closedAllDay    = details['closedAllDay']
+                    regularCloseDT  = details['date'] + ' ' + details['regularSessionClose'] if not closedAllDay else ''
+                    extendedCloseDT = details['date'] + ' ' + details['extendedSessionClose'] if not closedAllDay else ''
+                    d = {
+                        'date' : datetime.strptime(details['date'], "%Y-%m-%d"),
+                        'closedAllDay' : closedAllDay,
+                        'regularSessionClose' : parser.parse(details['regularSessionClose']) if not closedAllDay else '',
+                        'extendedSessionClose' : parser.parse(details['extendedSessionClose']) if not closedAllDay else ''
+                    }
+                    self.holidays[name] = d
+        else: return {}
 
     def refreshWatchlistLayout(self):
         for i in reversed(range(self.watchlistLayout.count())):
@@ -864,7 +941,7 @@ class TableWidget(QWidget):
         title.setAlignment(Qt.AlignTop|Qt.AlignCenter)
         title.setContentsMargins(0, 0, 0, 0)
         title.setSpacing(0)
-        for column in ['Symbol', 'Exchange', 'Bid', 'Last', 'Ask', 'Auction', 'Session', '']:
+        for column in ['Symbol', 'Exchange', 'Prev. Close', 'Change', 'Bid', 'Last', 'Ask', 'Position', 'Risk', 'Margin', 'Auction', 'Session', 'History', '']:
             w = QLabel(column)
             w.setFixedWidth(80)
             w.setStyleSheet("QLabel{color:#cccccc}")
@@ -874,8 +951,8 @@ class TableWidget(QWidget):
         self.watchlistLayout.addWidget(_w)
         self.watchlistItems = {}
         line = QWidget()
-        line.setFixedSize(560, 1)
-        line.setStyleSheet("QWidget{background-color:#cccccc; text-align: left}")
+        line.setFixedSize(1040, 1)
+        line.setStyleSheet("QWidget{background-color:#aaaaaa; text-align: left}")
         self.watchlistLayout.addWidget(line)
         for reqId in self.watchlist:
             item = WatchlistItem(reqId, self.watchlist[reqId].contract)
@@ -899,6 +976,9 @@ class TableWidget(QWidget):
         self.watchlistEmptyWidget()
         self.watchlistLayout.addWidget(self.noitem[0])
 
+    def getMktState(self):
+        self.sendMktStateToWatchlist.emit(self.mktState)
+
     def addToWatchlist(self, contractDescription):
         if len(self.watchlist) == 0: self.noitem[0].deleteLater()
         self.streamingDataReqId += 1
@@ -907,6 +987,8 @@ class TableWidget(QWidget):
         # self.refreshWatchlistLayout()
         item = WatchlistItem(self.streamingDataReqId, contractDescription.contract)
         item.remove.connect(self.removeFromWatchlist, Qt.DirectConnection)
+        item.requestMarketState.connect(self.getMktState, Qt.DirectConnection)
+        self.sendMktStateToWatchlist.connect(item.mktStateUpdate, Qt.DirectConnection)
         self.watchlistLayout.addWidget(item, alignment=Qt.AlignTop)
         self.watchlistItems[self.streamingDataReqId] = item
 
@@ -930,10 +1012,11 @@ class TableWidget(QWidget):
     def mapTimeToMktState(self, t):
         if t.weekday() in [5, 6]: return 0
         tint = t.hour * 10000 + t.minute * 100 + t.second
-        if tint >= 40000 and tint < 93000: return 1
-        if tint >= 93000 and tint < 160000: return 2
-        if tint >= 160000 and tint < 200000: return 3
+        if tint >= self.sessionToday['premarketOpen'] and tint < self.sessionToday['premarketClose']: return 1
+        if tint >= self.sessionToday['marketOpen'] and tint < self.sessionToday['marketClose']: return 2
+        if tint >= self.sessionToday['aftermarketOpen'] and tint < self.sessionToday['aftermarketClose']: return 3
         return 0
+
 
     def displayMktState(self, state:int):
         if state == 0:
@@ -944,20 +1027,67 @@ class TableWidget(QWidget):
             self.mktStatusLabel.setStyleSheet("QLabel { color: #f39c12; }")
         elif state == 2:
             self.mktStatusLabel.setText('Market is open')
-            self.mktStatusLabel.setStyleSheet("QLabel { color: #00E676; }")
+            self.mktStatusLabel.setStyleSheet("QLabel { color: #00E676;}")
         elif state == 3:
             self.mktStatusLabel.setText('After hours trading')
             self.mktStatusLabel.setStyleSheet("QLabel { color: #f39c12; }")
 
+    def updateTodaysSessionTimes(self, details):
+        regT = details['regularSessionClose']
+        extT = details['extendedSessionClose']
+        regCloseToday = regT.hour * 10000 + regT.minute * 100
+        extCloseToday = extT.hour * 10000 + extT.minute * 100
+        self.sessionToday['marketClose'] = regCloseToday
+        self.sessionToday['aftermarketOpen'] = regCloseToday
+        self.sessionToday['aftermarketClose'] = extCloseToday
+
+
+    def getSessionTimesToday(self, t):
+        dintToday = int(str(t.year) + str(t.month) + str(t.day))
+        self.isHoliday, self.closedAllDay = False, False
+        for name, details in self.holidays.items():
+            hdt = details['date']
+            dintHoliday = int(str(hdt.year) + str(hdt.month) + str(hdt.day))
+            if dintHoliday == dintToday:
+                self.isHoliday = True
+                self.holidayName = name
+                if not details['closedAllDay']:
+                    self.updateTodaysSessionTimes(details)
+                else: self.closedAllDay = True
+                break
+
+    def refreshHolidayLabel(self):
+        if self.isHoliday:
+            holiday = self.holidays[self.holidayName]
+            if self.closedAllDay:
+                label = 'Markets are closed in observation of {}'.format(self.holidayName)
+            else:
+                regClose = holiday['regularSessionClose'].strftime("%H:%M %p")
+                regClose = regClose[1:] if regClose[0] == '0' else regClose
+                extClose = holiday['extendedSessionClose'].strftime("%H:%M %p")
+                extClose = extClose[1:] if extClose[0] == '0' else extClose
+                label = 'Markets close early at {}, after market trading until {} ({})'.format(
+                    regClose, extClose, self.holidayName
+                )
+            self.holidayLabel.setText(label)
+            self.holidayLabel.setMaximumHeight(30)
+        else:
+            self.holidayLabel.setText('')
+            self.holidayLabel.setMaximumHeight(0)
+
 
     def showTime(self):
-
         t = datetime.now() + self.timeMultiplier * timedelta(hours=self.timeDIfferenceWithEDT)
+        if t.day != self.lastKnownDay:
+            self.getSessionTimesToday(t)
+            self.lastKnownDay = t.day
+            self.refreshHolidayLabel()
         if self.timeInfoReady: self.clockTime.setText(t.strftime("%I:%M:%S %p") + ' (EDT)')
         self.mktState = self.mapTimeToMktState(t)
         if self.mktState != self.prevMktState:
             self.prevMktState = self.mktState
             self.displayMktState(self.mktState)
+            self.sendMktStateToWatchlist.emit(self.mktState)
 
 
     def stop_dash_thread(self):
@@ -999,7 +1129,7 @@ class TableWidget(QWidget):
         self.searchButton.setStyleSheet("QPushButton {background-color: #3a3a3a; color: #6a6a6a}")
         self.searchButton.setText('Please wait...')
 
-    @pyqtSlot()
+    # @pyqtSlot()
     def start(self):
         self.watchlistItems[100001].animate()
         # self.chart = Chart()

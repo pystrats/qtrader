@@ -1,0 +1,280 @@
+<html>
+<head>
+<style>
+.Row {
+    display: table;
+    table-layout: fixed;
+    width: 1120px;
+    text-align: left;
+    /* border-spacing: 10px; */
+}
+.Column {
+    display: table-cell;
+    /* margin: 25px 0px 25px 0px; */
+}
+.Risk {
+  vertical-align: middle;
+  text-align: right;
+  line-height:2;
+  padding-right: 90px;
+}
+.title {
+  color: #ccc;
+  font-size: 16px;
+}
+.value {
+  font-size:20px;
+  font-weight:bold;
+  color: #ccc;
+}
+.standardFont {
+  color: #ccc;
+}
+.redFont {
+  color: rgba(255, 82, 82, 1);
+}
+.currSign:before {
+  content: '$';
+}
+</style>
+</head>
+<body style="background-color: #2c3e50;margin:0;padding:0;text-align:left;overflow:hidden">
+  <!-- <center> -->
+  <div class="Row">
+      <div class="Column">
+        <div id="intradayMargin"></div>
+      </div>
+      <div class="Column">
+        <div id="overnightMargin"></div>
+      </div>
+      <div class="Column">
+        <div id="exposure"></div>
+      </div>
+      <div class="Column">
+      </div>
+      <div class="Column Risk">
+        <div class="title">At risk</div>
+        <div class="value">risk_value</div>
+      </div>
+  </div>
+
+  <!-- </center> -->
+  <script src="https://cdn.plot.ly/plotly-2.20.0.min.js" charset="utf-8"></script>
+  <script>
+	IntradayGauge = document.getElementById('intradayMargin');
+  OvernightGauge = document.getElementById('overnightMargin');
+  ExposureGauge = document.getElementById('exposure');
+  SCORE_VALUES_INTRADAY = [
+    ({ label: "Very poor", color: 'rgba(243, 156, 18, 0.2)' }),
+  	({ label: "Poor", color: 'rgba(243, 156, 18, 0.4)' }),
+  	({ label: "Average", color: 'rgba(243, 156, 18, 0.6)' }),
+  	({ label: "Good", color: 'rgba(243, 156, 18, 0.8)' }),
+  	({ label: "Excellent", color: 'rgba(255, 82, 82, 1)' })
+  ]
+  SCORE_VALUES_EXPOSURE = [
+    ({ label: "Very poor", color: 'rgba(243, 156, 18, 0.2)' }),
+  	({ label: "Poor", color: 'rgba(243, 156, 18, 0.4)' }),
+  	({ label: "Average", color: 'rgba(243, 156, 18, 0.6)' }),
+  	({ label: "Good", color: 'rgba(255, 82, 82, 0.8)' }),
+  	({ label: "Excellent", color: 'rgba(255, 82, 82, 1)' })
+  ]
+  SCORE_VALUES_OVERNIGHT = [
+	({ label: "Very poor", color: 'rgba(243, 156, 18, 0.2)' }),
+	({ label: "Poor", color: 'rgba(243, 156, 18, 0.4)' }),
+	({ label: "Average", color: 'rgba(243, 156, 18, 0.6)' }),
+	({ label: "Good", color: 'rgba(243, 156, 18, 0.8)' }),
+	({ label: "Excellent", color: 'rgba(255, 82, 82, 1)' })
+  ]
+  base_chart_intraday = ({
+		"values": [14, 14, 14, 14, 14, 30],
+		"labels": [...SCORE_VALUES_INTRADAY.map(s => s.label), " "],
+		"marker": {
+        "colors": [
+						...SCORE_VALUES_INTRADAY.map(s => s.color),
+            'rgba(255, 255, 255, 0)'
+				],
+				"line": {
+						"width": 4,
+						"color": "#2c3e50"
+				}
+		},
+    "rotation": -126,
+		"name": "Gauge",
+		"hole": .75,
+		"type": "pie",
+		"direction": "clockwise",
+		"sort": false,
+		"showlegend": false,
+		"hoverinfo": "none",
+		"textinfo": "none",
+		"textposition": "outside"
+	})
+
+  base_chart_overnight = ({
+		"values": [14, 14, 14, 14, 14, 30],
+		"labels": [...SCORE_VALUES_OVERNIGHT.map(s => s.label), " "],
+		"marker": {
+        "colors": [
+						...SCORE_VALUES_OVERNIGHT.map(s => s.color),
+            'rgba(255, 255, 255, 0)'
+				],
+				"line": {
+						"width": 4,
+						"color": "#2c3e50"
+				}
+		},
+    "rotation": -126,
+		"name": "Gauge",
+		"hole": .75,
+		"type": "pie",
+		"direction": "clockwise",
+		"sort": false,
+		"showlegend": false,
+		"hoverinfo": "none",
+		"textinfo": "none",
+		"textposition": "outside"
+	})
+
+  base_chart_exposure = ({
+		"values": [14, 14, 14, 14, 14, 30],
+		"labels": [...SCORE_VALUES_EXPOSURE.map(s => s.label), " "],
+		"marker": {
+        "colors": [
+						...SCORE_VALUES_EXPOSURE.map(s => s.color),
+            'rgba(255, 255, 255, 0)'
+				],
+				"line": {
+						"width": 4,
+						"color": "#2c3e50"
+				}
+		},
+    "rotation": -126,
+		"name": "Gauge",
+		"hole": .75,
+		"type": "pie",
+		"direction": "clockwise",
+		"sort": false,
+		"showlegend": false,
+		"hoverinfo": "none",
+		"textinfo": "none",
+		"textposition": "outside"
+	})
+
+  intraday_value = ({
+    "type": "indicator",
+    "mode": "number",
+    "value": "gaugeReading",
+    "number": { "prefix":"", "suffix": "%<br><span style='font-size:15px;top:-20px;'>Intraday Margin</span>", "font":{"size": 20, "color": "#eeeeee", "line-height":0.5} },
+    "domain": ({
+      "x": [0, 1],
+      "y": [0.2, 0.4]
+    })
+  })
+
+  overnight_value = ({
+    "type": "indicator",
+    "mode": "number",
+    "value": 73,
+    "number": { "prefix":"", "suffix": "%<br><span style='font-size:15px;'>Overnight Margin</span>", "font":{"size": 20, "color": "#eeeeee"} },
+    "domain": ({
+      "x": [0, 1],
+      "y": [0.2, 0.4]
+    })
+  })
+
+  exposure_value = ({
+    "type": "indicator",
+    "mode": "number",
+    "value": 24,
+    "number": { "prefix":"", "suffix": "%<br><span style='font-size:15px;'>Exposure</span>", "font":{"size": 20, "color": "#eeeeee"} },
+    "domain": ({
+      "x": [0, 1],
+      "y": [0.2, 0.4]
+    })
+  })
+
+  intraday_pointer = ({
+    "type": "line",
+    "x0": 0.5,
+    "y0": 0.5,
+    "x1": 0.2,
+    "y1": 0.8,
+    "line": ({
+      "color": "#cccccc",
+      "width": 2,
+      "dash": "solid"
+    }),
+  })
+
+  overnight_pointer = ({
+    "type": "line",
+    "x0": 0.5,
+    "y0": 0.5,
+    "x1": 0.8,
+    "y1": 0.8,
+    "line": ({
+      "color": "#cccccc",
+      "width": 2,
+      "dash": "solid"
+    }),
+  })
+
+  exposure_pointer = ({
+    "type": "line",
+    "x0": 0.5,
+    "y0": 0.5,
+    "x1": 0.2,
+    "y1": 0.8,
+    "line": ({
+      "color": "#cccccc",
+      "width": 2,
+      "dash": "solid"
+    }),
+  })
+
+  const config = {
+    displayModeBar: false,
+  };
+
+  Plotly.newPlot(IntradayGauge, [intraday_value, base_chart_intraday], {
+    shapes: [intraday_pointer],
+    width: 130,
+    height: 130,
+    margin: {"t": 1, "b": 1, "l": 1, "r": 1},
+    plot_bgcolor:"#2c3e50",
+    paper_bgcolor:"#2c3e50"
+  }, config)
+  Plotly.newPlot(OvernightGauge, [overnight_value, base_chart_overnight], {
+    shapes: [overnight_pointer],
+    width: 130,
+    height: 130,
+    margin: {"t": 1, "b": 1, "l": 1, "r": 1},
+    plot_bgcolor:"#2c3e50",
+    paper_bgcolor:"#2c3e50"
+  }, config)
+  Plotly.newPlot(ExposureGauge, [exposure_value, base_chart_exposure], {
+    shapes: [exposure_pointer],
+    width: 130,
+    height: 130,
+    margin: {"t": 1, "b": 1, "l": 1, "r": 1},
+    plot_bgcolor:"#2c3e50",
+    paper_bgcolor:"#2c3e50"
+  }, config)
+</script>
+<script>
+    let x = document.querySelectorAll(".value");
+    for (let i = 0, len = x.length; i < len; i++) {
+        if (parseFloat(x[i].innerHTML)==0.0) {
+          x[i].classList.add("standardFont");
+        }
+        else {
+          x[i].classList.add("redFont");
+        }
+        let num = Number(x[i].innerHTML)
+            .toLocaleString('en');
+        x[i].innerHTML = num;
+        x[i].classList.add("currSign");
+    }
+</script>
+</body>
+</html>

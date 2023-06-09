@@ -1,0 +1,50 @@
+{
+  "New Years Day" : {
+    "date" : "2023-01-02",
+    "closedAllDay" : true,
+    "regularSessionClose" : "",
+    "extendedSessionClose" : ""
+  },
+  "Juneteenth National Independence Day" : {
+    "date" : "2023-06-19",
+    "closedAllDay" : true,
+    "regularSessionClose" : "",
+    "extendedSessionClose" : ""
+  },
+  "Day before Independence Day" : {
+    "date" : "2023-07-03",
+    "closedAllDay" : false,
+    "regularSessionClose" : "01:00 PM",
+    "extendedSessionClose" : "05:00 PM"
+  },
+  "Independence Day" : {
+    "date" : "2023-07-04",
+    "closedAllDay" : true,
+    "regularSessionClose" : "",
+    "extendedSessionClose" : ""
+  },
+  "Labor Day" : {
+    "date" : "2023-09-04",
+    "closedAllDay" : true,
+    "regularSessionClose" : "",
+    "extendedSessionClose" : ""
+  },
+  "Thanksgiving Day" : {
+    "date" : "2023-10-23",
+    "closedAllDay" : true,
+    "regularSessionClose" : "",
+    "extendedSessionClose" : ""
+  },
+  "Day after Thanksgiving Day" : {
+    "date" : "2023-10-24",
+    "closedAllDay" : false,
+    "regularSessionClose" : "01:00 PM",
+    "extendedSessionClose" : "05:00 PM"
+  },
+  "Christmas Day" : {
+    "date" : "2023-12-25",
+    "closedAllDay" : true,
+    "regularSessionClose" : "",
+    "extendedSessionClose" : ""
+  }
+}

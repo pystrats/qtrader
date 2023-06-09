@@ -57,8 +57,8 @@ class Chart(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        self.activeSymbol = 'MSFT'
-        self.activeExchange = 'NYSE'
+        self.activeSymbol = 'STK'
+        self.activeExchange = 'EXCHANGE'
         self.activePrice = 135.35
         self.newSymbol = ''
         self.newExchange = ''

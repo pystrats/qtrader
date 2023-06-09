@@ -1,0 +1,1 @@
+{"connection": {"port": 4002, "clientId": 1}, "server": {"address": "876.534.667.438", "key": "key", "role": "Client"}, "common": {"checkUpdates": true, "risk": 300}, "margin": {"intraday": 51, "overnight": 25}}

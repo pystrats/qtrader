@@ -11,6 +11,7 @@ CUDA Toolkit must be installed and GPU device enabled in order to run this scrip
 # SETTINGS #####################################################################
 NUMBER_OF_STOCKS        = 100
 NUMBER_OF_DATAPOINTS    = 10000
+API_KEY                 = '2DZUMLKMRJ5NCJP7'
 
 # CUDA
 CUDA_DEVICE_ID          = 0
@@ -36,10 +37,15 @@ AVG_Periods = [18, 130, 625, 1181, 1181, 1181, 1181, 1181, 1181, 1181, 1181, 118
 
 import sys, math, csv
 import numpy as np
+import requests
 
 from numba import cuda
 from time import time
 from copy import deepcopy
+from datetime import datetime
+
+import warnings
+warnings.filterwarnings("ignore")
 
 
 @cuda.jit(device=True)
@@ -112,6 +118,31 @@ def compute_signals(Averages, Signals, InputVector, FIRST_VALID_INDEX: int):
 
 def main(argv):
 
+    NUMBER_OF_STOCKS = 1
+    if len(argv) > 1:
+        SYMBOL = argv[1]
+    else:
+        SYMBOL = ''
+        print('Please specify symbol')
+        sys.exit()
+
+    print('{} Fetching {} price history...'.format(datetime.now(), SYMBOL), end=' ', flush=True)
+    url = 'https://www.alphavantage.co/query?function=TIME_SERIES_INTRADAY&symbol={}&interval=5min&datatype=json&outputsize=full&apikey=2DZUMLKMRJ5NCJP7'.format(SYMBOL)
+    j = requests.get(url).json()
+    print('done')
+    key = 'Time Series (5min)'
+    data, d = j[key], {}
+    keys, values = [], []
+    for key, value in data.items():
+        v = value['4. close']
+        d[key] = v
+        keys.append(key)
+        values.append(round(float(v), 2))
+    NUMBER_OF_DATAPOINTS = len(keys)
+    values.reverse()
+    keys.reverse()
+
+    """
     # Generate synthetic price data from normally distributed random variables
     rng = np.random.default_rng( int(time()//1) )  # Initialize random number generator
 
@@ -122,6 +153,9 @@ def main(argv):
     price_adjustments = [ min(returns[i]) * -1. + 1. if min(returns[i]) < .0 else 1. for i in range(NUMBER_OF_STOCKS) ]
     for n in range(NUMBER_OF_STOCKS): returns[n][:] += price_adjustments[n]
     prices = np.around(returns, decimals=2)
+    """
+
+    prices = np.array(values).reshape((1, len(values)))
 
     returns = np.zeros(shape=(NUMBER_OF_STOCKS, NUMBER_OF_DATAPOINTS), dtype='float64')
     for n in range(NUMBER_OF_STOCKS):
@@ -139,7 +173,9 @@ def main(argv):
     cuda_STDs = cuda.to_device(STDs, stream=stream)
     cuda_Periods = cuda.to_device(np.array(SD_Periods, dtype='int'), stream=stream)
 
+    print('{} Computing standard deviations...'.format(datetime.now()), end = ' ', flush = True)
     compute_standard_deviations[BLOCKS_PER_GRID, THREADS_PER_BLOCK, stream](cuda_returns, cuda_STDs, cuda_Periods)
+    print('done')
 
     cuda_STDs.copy_to_host(STDs, stream=stream)
     stream.synchronize()
@@ -153,7 +189,9 @@ def main(argv):
     cuda_SD_Periods = cuda.to_device(np.array(SD_Periods, dtype='int'), stream=stream)
     cuda_AVG_Periods = cuda.to_device(np.array(AVG_Periods, dtype='int'), stream=stream)
 
+    print('{} Computing averages...'.format(datetime.now()), end = ' ', flush = True)
     compute_averages[BLOCKS_PER_GRID, THREADS_PER_BLOCK, stream](cuda_STDs, cuda_Averages, cuda_SD_Periods, cuda_AVG_Periods)
+    print('done')
 
     cuda_Averages.copy_to_host(Averages, stream=stream)
     stream.synchronize()
@@ -178,13 +216,16 @@ def main(argv):
     cuda_Signals = cuda.to_device(Signals, stream=stream)
     cuda_InputVector = cuda.to_device(np.array(InputVector, dtype='float64'), stream=stream)
 
+    print('{} Computing signals...'.format(datetime.now()), end = ' ', flush = True)
     compute_signals[BLOCKS_PER_GRID, THREADS_PER_BLOCK, stream](cuda_Averages, cuda_Signals, cuda_InputVector, FIRST_VALID_INDEX)
+    print('done')
 
     cuda_Signals.copy_to_host(Signals, stream=stream)
     stream.synchronize()
 
     # Save Data
-    header = ['price', 'signal']
+    print('{} Saving data file...'.format(datetime.now()), end = ' ', flush = True)
+    header = ['datetime', 'price', 'signal']
     for stockNumber in range(NUMBER_OF_STOCKS):
         stockSignal = []
         for n in range(NUMBER_OF_DATAPOINTS):
@@ -194,21 +235,24 @@ def main(argv):
                 stockSignal.append('buy' if Signals[stockNumber][n] else 'sell')
 
         stockPrice = list(deepcopy(prices[stockNumber]))
+        stockDatetime = list(deepcopy(np.array(keys)))
 
         stockSignal.reverse()
         stockPrice.reverse()
+        stockDatetime.reverse()
 
         data = []
-        for n in range(NUMBER_OF_DATAPOINTS): data.append([stockPrice[n], stockSignal[n]])
+        for n in range(NUMBER_OF_DATAPOINTS): data.append([stockDatetime[n], stockPrice[n], stockSignal[n]])
 
         prefix = '00' if stockNumber < 10 else '0'
         if stockNumber >= 100: prefix = ''
 
-        fileName = 'Stock{}{}.csv'.format(prefix, stockNumber)
+        fileName = '{} {}.csv'.format(SYMBOL, datetime.now())
         with open(fileName, 'w', encoding='UTF8', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(header)
             writer.writerows(data)
+        print("saved as {}".format(fileName))
 
 
 if __name__ == '__main__':
