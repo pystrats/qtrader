@@ -1,4 +1,5 @@
-## Install dependencies
+# Installation
+## 1. Install dependencies
 ### All platforms
 ```
 pip install -r requirements.txt
@@ -15,7 +16,7 @@ pip install vext.pyqt5
 ### Windows
 Download PyQt5 from: https://www.riverbankcomputing.com/software/pyqt/download5
 
-## Install IB API
+## 2. Install IB API
 Download stable version from https://interactivebrokers.github.io/
 
 Upack and navigate to 'pythonclient'. DO NOT USE PIP TO INSTALL! Install using 'setup.py install' instead.
@@ -23,5 +24,5 @@ Upack and navigate to 'pythonclient'. DO NOT USE PIP TO INSTALL! Install using '
 ```
 python setup.py install
 ```
-## Install CUDA Toolkit
+## 3. Install CUDA Toolkit
 Install an older version of CUDA Toolkit: 11.7-11.9. Version 12.0 and later are not supported. Download [SDK Installer](https://developer.nvidia.com/cuda-downloads) from NVIDIA Developer portal.
