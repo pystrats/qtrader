@@ -1,5 +1,5 @@
 from PyQt5.QtWidgets import (QMessageBox, QLabel, QDialogButtonBox, QPushButton, QDesktopWidget, QVBoxLayout, QWidget,
-                    QScrollArea, QGridLayout, QApplication, QLineEdit, QShortcut, QComboBox, QCheckBox, QSpinBox, QHBoxLayout)
+                    QScrollArea, QGridLayout, QApplication, QLineEdit, QShortcut, QComboBox, QCheckBox, QSpinBox, QHBoxLayout, QDoubleSpinBox)
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtCore import Qt, QPoint, pyqtSignal
 
@@ -8,10 +8,7 @@ import os
 import json
 
 
-class Settings(QWidget):
-
-    success = pyqtSignal(bool)
-    timeframe_error = pyqtSignal()
+class SymbolSettings(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -25,17 +22,9 @@ class Settings(QWidget):
         self.width = 600
         self.widthSpacing = 100
 
-        self.settings = {"strategy": {"timeframe": 3, "onlyRTH_history": True, "onlyRTH_trading": True, "trade_all": True, "hist_excess": 50, "pos_size": 50, "flatten_eod": True, "flatten_eod_seconds": 300}, "connection": {"port": 4002, "clientId": 1}, "server": {"address": "000.000.000.000", "key": "", "role": "Client"}, "common": {"checkUpdates": True, "risk": 300}, "margin": {"intraday": 50, "overnight": 25}}
-
-        fileName = path = '{}{}{}'.format( os.path.dirname(os.path.abspath(__file__)), '/config/', 'settings.json')
-        if os.path.isfile(fileName):
-            with open(fileName) as f:
-                self.settings = json.load(f)
-
         w = QWidget()
         l = QVBoxLayout()
         self.setLayout(l)
-
 
         scroll = QScrollArea(w)
         l.addWidget(scroll)
@@ -89,11 +78,10 @@ class Settings(QWidget):
 
         timeframe = QLabel('Timeframe')
         self.timeframe_spinbox = QSpinBox()
-        self.timeframe_spinbox.setRange(1,59)
-        self.timeframe_spinbox.setMaximum(59)
-        self.timeframe_spinbox.setFixedWidth(100)
+        self.timeframe_spinbox.setRange(1,60)
+        self.timeframe_spinbox.setMaximum(60)
         self.timeframe_spinbox.setValue( self.settings['strategy']['timeframe'] )
-        self.timeframe_spinbox.setSuffix(" min")
+        self.timeframe_spinbox.setSuffix(" minutes")
 
         onlyRTH_history = QLabel('Only RTH data in analyses')
         self.use_only_RTH_data = QCheckBox()
@@ -103,35 +91,14 @@ class Settings(QWidget):
         self.use_only_RTH_trading = QCheckBox()
         self.use_only_RTH_trading.setChecked( self.settings['strategy']['onlyRTH_trading'] )
 
-        trade_all = QLabel('Apply all presets to a new instrument')
+        trade_all = QLabel('Trade all strategies by default')
         self.trade_all = QCheckBox()
         self.trade_all.setChecked( self.settings['strategy']['trade_all'] )
-
-        flatten_eod = QLabel('Go flat EOD')
-        self.flatten_eod = QCheckBox()
-        self.flatten_eod.setChecked( self.settings['strategy']['flatten_eod'] )
-
-        flatten_eod_seconds = QLabel('Go flat at T = Closing Bell minus')
-        self.flatten_eod_seconds = QSpinBox()
-        self.flatten_eod_seconds.setRange(5,3000)
-        self.flatten_eod_seconds.setMaximum(3000)
-        self.flatten_eod_seconds.setFixedWidth(100)
-        self.flatten_eod_seconds.setValue( self.settings['strategy']['flatten_eod_seconds'] )
-        self.flatten_eod_seconds.setSuffix(" sec")
-
-        hist_excess = QLabel('History excess to download')
-        self.hist_excess = QSpinBox()
-        self.hist_excess.setRange(10,1000)
-        self.hist_excess.setMaximum(1000)
-        self.hist_excess.setFixedWidth(100)
-        self.hist_excess.setValue( self.settings['strategy']['hist_excess'] )
-        self.hist_excess.setSuffix(" %")
 
         default_pos_size = QLabel('Default position size')
         self.default_pos_size = QSpinBox()
         self.default_pos_size.setRange(0,1000000)
         self.default_pos_size.setMaximum(1000000)
-        self.default_pos_size.setFixedWidth(100)
         self.default_pos_size.setValue( self.settings['strategy']['pos_size'] )
         self.default_pos_size.setPrefix("$ ")
 
@@ -155,7 +122,7 @@ class Settings(QWidget):
             self.role_value.setCurrentIndex(0)
         else: self.role_value.setCurrentIndex(1)
         self.role_value.addItem('Client')
-        self.role_value.addItem('Manager')
+        self.role_value.addItem('Server')
         # self.role_value.setFixedWidth(100)
 
         margin = QLabel('Margin')
@@ -224,40 +191,34 @@ class Settings(QWidget):
         _l.addWidget(self.trade_all, 6, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
         _l.addWidget(default_pos_size, 7, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
         _l.addWidget(self.default_pos_size, 7, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
-        _l.addWidget(flatten_eod, 8, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
-        _l.addWidget(self.flatten_eod, 8, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
-        _l.addWidget(flatten_eod_seconds, 9, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
-        _l.addWidget(self.flatten_eod_seconds, 9, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
-        _l.addWidget(hist_excess, 10, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
-        _l.addWidget(self.hist_excess, 10, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
 
-        _l.addWidget(connection, 11, 0, 1, 2, alignment=Qt.AlignBottom|Qt.AlignLeft)
-        _l.addWidget(separator, 12, 0, 1, 2, alignment=Qt.AlignVCenter|Qt.AlignLeft)
-        _l.addWidget(port_name, 13, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
-        _l.addWidget(self.port_value, 13, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
-        _l.addWidget(clientID_n, 14, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
-        _l.addWidget(self.clientID_v, 14, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
-        _l.addWidget(server, 15, 0, 1, 2, alignment=Qt.AlignBottom|Qt.AlignLeft)
-        _l.addWidget(server_separator, 16, 0, 1, 2, alignment=Qt.AlignVCenter|Qt.AlignLeft)
-        _l.addWidget(server_address, 17, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
-        _l.addWidget(self.server_value, 17, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
-        _l.addWidget(auth, 18, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
-        _l.addWidget(self.auth_value, 18, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
-        _l.addWidget(role, 19, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
-        _l.addWidget(self.role_value, 19, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
-        _l.addWidget(margin, 20, 0, 1, 2, alignment=Qt.AlignVCenter|Qt.AlignLeft)
-        _l.addWidget(margin_separator, 21, 0, 1, 2, alignment=Qt.AlignVCenter|Qt.AlignLeft)
-        _l.addWidget(intraday_margin, 22, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
-        _l.addWidget(self.intraday_margin, 22, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
-        _l.addWidget(overnight_margin, 23, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
-        _l.addWidget(self.overnight_margin, 23, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
-        _l.addWidget(common, 24, 0, 1, 2, alignment=Qt.AlignVCenter|Qt.AlignLeft)
-        _l.addWidget(common_separator, 25, 0, 1, 2, alignment=Qt.AlignVCenter|Qt.AlignLeft)
-        _l.addWidget(check_updates, 26, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
-        _l.addWidget(self.check_updates_checkbox, 26, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
-        _l.addWidget(default_risk, 27, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
-        _l.addWidget(self.default_risk, 27, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
-        _l.addLayout(button_panel, 28, 1, alignment=Qt.AlignVCenter|Qt.AlignRight)
+        _l.addWidget(connection, 10, 0, 1, 2, alignment=Qt.AlignBottom|Qt.AlignLeft)
+        _l.addWidget(separator, 11, 0, 1, 2, alignment=Qt.AlignVCenter|Qt.AlignLeft)
+        _l.addWidget(port_name, 12, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
+        _l.addWidget(self.port_value, 12, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
+        _l.addWidget(clientID_n, 13, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
+        _l.addWidget(self.clientID_v, 13, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
+        _l.addWidget(server, 14, 0, 1, 2, alignment=Qt.AlignBottom|Qt.AlignLeft)
+        _l.addWidget(server_separator, 15, 0, 1, 2, alignment=Qt.AlignVCenter|Qt.AlignLeft)
+        _l.addWidget(server_address, 16, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
+        _l.addWidget(self.server_value, 16, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
+        _l.addWidget(auth, 17, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
+        _l.addWidget(self.auth_value, 17, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
+        _l.addWidget(role, 18, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
+        _l.addWidget(self.role_value, 18, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
+        _l.addWidget(margin, 19, 0, 1, 2, alignment=Qt.AlignVCenter|Qt.AlignLeft)
+        _l.addWidget(margin_separator, 20, 0, 1, 2, alignment=Qt.AlignVCenter|Qt.AlignLeft)
+        _l.addWidget(intraday_margin, 21, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
+        _l.addWidget(self.intraday_margin, 21, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
+        _l.addWidget(overnight_margin, 22, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
+        _l.addWidget(self.overnight_margin, 22, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
+        _l.addWidget(common, 23, 0, 1, 2, alignment=Qt.AlignVCenter|Qt.AlignLeft)
+        _l.addWidget(common_separator, 24, 0, 1, 2, alignment=Qt.AlignVCenter|Qt.AlignLeft)
+        _l.addWidget(check_updates, 25, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
+        _l.addWidget(self.check_updates_checkbox, 25, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
+        _l.addWidget(default_risk, 26, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
+        _l.addWidget(self.default_risk, 26, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
+        _l.addLayout(button_panel, 27, 1, alignment=Qt.AlignVCenter|Qt.AlignRight)
 
 
         self.setWindowTitle("Settings")
@@ -271,50 +232,3 @@ class Settings(QWidget):
         self.setFixedWidth(self.width)
         # self.setMinimumWidth(500)
         self.setFixedHeight(self.screenHeight*.75)
-
-        # qtRectangle = self.frameGeometry()
-        # centerPoint = QDesktopWidget().availableGeometry().center()
-        # qtRectangle.moveCenter(centerPoint)
-        # self.move(qtRectangle.topLeft())
-
-    def cancel(self):
-        self.close()
-
-    def save(self):
-        self.settings = {}
-        self.settings['strategy'] = {}
-        self.settings['strategy']['timeframe'] = int(self.timeframe_spinbox.value())
-        self.settings['strategy']['onlyRTH_history'] = self.use_only_RTH_data.isChecked()
-        self.settings['strategy']['onlyRTH_trading'] = self.use_only_RTH_trading.isChecked()
-        self.settings['strategy']['trade_all'] = self.trade_all.isChecked()
-        self.settings['strategy']['hist_excess'] = int(self.hist_excess.value())
-        self.settings['strategy']['pos_size'] = int(self.default_pos_size.value())
-        self.settings['strategy']['flatten_eod'] = self.flatten_eod.isChecked()
-        self.settings['strategy']['flatten_eod_seconds'] = int(self.flatten_eod_seconds.value())
-
-        self.settings['connection'] = {}
-        self.settings['connection']['port'] = int(self.port_value.text())
-        self.settings['connection']['clientId'] = int(self.clientID_v.text())
-        self.settings['server'] = {}
-        self.settings['server']['address'] = str(self.server_value.text())
-        self.settings['server']['key'] = str(self.auth_value.text())
-        self.settings['server']['role'] = str(self.role_value.currentText())
-        self.settings['common'] = {}
-        self.settings['common']['checkUpdates'] = self.check_updates_checkbox.isChecked()
-        self.settings['common']['risk'] = int(self.default_risk.value())
-        self.settings['margin'] = {}
-        self.settings['margin']['intraday'] = int(self.intraday_margin.value())
-        self.settings['margin']['overnight'] = int(self.overnight_margin.value())
-
-        if self.settings['strategy']['onlyRTH_history'] and not self.settings['strategy']['onlyRTH_trading']:
-            self.timeframe_error.emit()
-        else:
-            try:
-                path = '{}{}'.format( os.path.dirname(os.path.abspath(__file__)), '/config/' )
-                if not os.path.isdir(path): os.mkdir(path)
-                fileName = '{}{}'.format(path, 'settings.json')
-                with open(fileName, 'w') as f:
-                    f.write(json.dumps(self.settings))
-                self.success.emit(True)
-            except: self.success.emit(False)
-            self.close()

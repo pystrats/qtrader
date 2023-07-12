@@ -226,7 +226,7 @@ class SearchWindow(QWidget):
             self.hintLabel1 = QLabel("Ctrl+N: Next")
             self.hintLabel2 = QLabel("Ctrl+B: Previous")
             self.hintLabel3 = QLabel("Ctrl+Q: Close   ")
-            enterHint = 'Chart   ' if source == 'chart' else 'Add to Watchlist'
+            enterHint = 'Chart   ' if source == 'chart' else 'Add to Portfolio'
             self.hintLabel4 = QLabel("Enter: " + enterHint)
             self.hintLabel1.setStyleSheet("QLabel {color: #95a5a6; font-style: italic;}")
             self.hintLabel2.setStyleSheet("QLabel {color: #95a5a6; font-style: italic;}")
@@ -252,7 +252,7 @@ class SearchWindow(QWidget):
                 self.addButton.setEnabled(True)
                 self.addButton.clicked.connect(self.ok, Qt.DirectConnection)
             else:
-                self.addButton = QPushButton("Add to Watchlist")
+                self.addButton = QPushButton("Add to Portfolio")
                 self.addButton.setStyleSheet("QPushButton {background-color: #f39c12; color: #2a2a2a; font-weight: bold; border: 1px solid #2a2a2a;}")
                 self.addButton.setFixedSize(150,30)
                 self.addButton.setEnabled(True)

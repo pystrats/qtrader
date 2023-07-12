@@ -71,13 +71,17 @@ class WatchlistItem(QWidget):
 
     remove = pyqtSignal(int)
     requestMarketState = pyqtSignal()
+    update_settings = pyqtSignal(str)
 
-    def __init__(self, reqId, contract, parent=None):
+    def __init__(self, reqId, contract, position, parent=None):
         super().__init__(parent)
 
         self.MIN_TIME_BETWEEN_ANIMATIONS = .5
 
         self.reqId = reqId
+
+        self.mktState = 0
+        self.isTrading = False
 
         self.symbol = contract.symbol
         self.exchange = contract.primaryExchange if contract.primaryExchange not in ['', ' '] else contract.exchange
@@ -88,7 +92,8 @@ class WatchlistItem(QWidget):
         self.auction = 'Halted'
         self.session = 'Closed'
         self.history = 'Pending'
-        self.position = 0
+        self.execution =  'Off'
+        self.position = position
         self.risk = 0
         self.margin = 0
         self.dayDirection = 0
@@ -114,10 +119,13 @@ class WatchlistItem(QWidget):
         self._ask = AnimatedWidget()
         self._position = QLabel('0')
         self._risk = QLabel('0')
+        self._execution = QLabel(self.execution)
         self._margin = QLabel('0')
         self._auction = QLabel(self.auction)
         self._session = QLabel(self.session)
         self._history = QLabel(self.history)
+
+        self.positionChanged(0)
 
         self._symbol.setAlignment(Qt.AlignCenter)
         self._exchange.setAlignment(Qt.AlignCenter)
@@ -133,6 +141,7 @@ class WatchlistItem(QWidget):
         self._history.setAlignment(Qt.AlignCenter)
         self._position.setAlignment(Qt.AlignCenter)
         self._risk.setAlignment(Qt.AlignCenter)
+        self._execution.setAlignment(Qt.AlignCenter)
         self._margin.setAlignment(Qt.AlignCenter)
 
         self._symbol.setFixedWidth(self.colWidth)
@@ -149,6 +158,7 @@ class WatchlistItem(QWidget):
         self._history.setFixedWidth(self.colWidth)
         self._position.setFixedWidth(self.colWidth)
         self._risk.setFixedWidth(self.colWidth)
+        self._execution.setFixedWidth(self.colWidth)
         self._margin.setFixedWidth(self.colWidth)
 
         self._symbol.setFixedHeight(self.rowHeight)
@@ -165,15 +175,17 @@ class WatchlistItem(QWidget):
         self._history.setFixedHeight(self.rowHeight)
         self._position.setFixedHeight(self.rowHeight)
         self._risk.setFixedHeight(self.rowHeight)
+        self._execution.setFixedHeight(self.rowHeight)
         self._margin.setFixedHeight(self.rowHeight)
 
         self._symbol.setStyleSheet("QLabel{color:#f39c12; font-weight: bold; font-size: 17px;}")
         self._exchange.setStyleSheet("QLabel{color:#aaaaaa; font-weight: normal;}")
         self._history.setStyleSheet("QLabel{color:#6a6a6a; font-weight: normal;}")
         self._change.setStyleSheet("QLabel{color:#aaaaaa;}")
-        self._position.setStyleSheet("QLabel{color:#777777;}")
+        # self._position.setStyleSheet("QLabel{color:#777777;}")
         self._risk.setStyleSheet("QLabel{color:#777777;}")
-        self._margin.setStyleSheet("QLabel{color:#777777;}")
+        self._execution.setStyleSheet("QLabel{color:#ff5252;}")
+        # self._margin.setStyleSheet("QLabel{color:#777777;}")
         self._session.setStyleSheet("QLabel{color:#777777;}")
         self._auction.setStyleSheet("QLabel{color:#777777;}")
 
@@ -182,6 +194,21 @@ class WatchlistItem(QWidget):
         self.removeBtn.setEnabled(True)
         self.removeBtn.clicked.connect(self._remove)
         self.removeBtn.setFixedSize(75,25)
+
+        self.settingsBtn = QPushButton('Settings')
+        self.settingsBtn.setStyleSheet("QPushButton { border: 1px solid #2a2a2a; border-radius: 3px; background-color: '#4a4a4a'; color: '#eeeeee'; font-size: 12px; }")
+        self.settingsBtn.setEnabled(True)
+        self.settingsBtn.clicked.connect(self._settings)
+        self.settingsBtn.setFixedSize(75,25)
+
+        self.spacer = QLabel(' ')
+        self.spacer.setStyleSheet('QLabel{min-width: 5px;}')
+
+        self.btnPannel = QHBoxLayout()
+        self.btnPannel.addWidget(self.settingsBtn)
+        self.btnPannel.addWidget(self.spacer)
+        self.btnPannel.addWidget(self.removeBtn)
+        self.btnPannel.setAlignment(Qt.AlignRight)
 
         self.animateLast = QPushButton('')
         self.animateLast.clicked.connect(self._last.animate)
@@ -198,34 +225,30 @@ class WatchlistItem(QWidget):
         self.layout.addWidget(self._last)
         self.layout.addWidget(self._ask)
         self.layout.addWidget(self._position)
-        self.layout.addWidget(self._risk)
         self.layout.addWidget(self._margin)
+        self.layout.addWidget(self._execution)
         self.layout.addWidget(self._auction)
         self.layout.addWidget(self._session)
         self.layout.addWidget(self._history)
-        self.layout.addWidget(self.removeBtn)
+        self.layout.addLayout(self.btnPannel)
+        # self.layout.addWidget(self.removeBtn)
 
         self.setLayout(self.layout)
 
     def mktStateUpdate(self, state):
-        print('Market state update ')
+        self.mktState = state
         if state == 0:
             self.resetAllFields()
-        elif state == 1:
-            self._auction.setText('Open')
-            self._auction.setStyleSheet("QLabel{color:#00E676;}")
-            self._session.setText('Post-market')
-            self._session.setStyleSheet("QLabel{color:#f39c12;}")
-        elif state == 2:
-            self._auction.setText('Open')
-            self._auction.setStyleSheet("QLabel{color:#00E676;}")
-            self._session.setText('Regular')
-            self._session.setStyleSheet("QLabel{color:#aaaaaa;}")
-        elif state == 3:
-            self._auction.setText('Open')
-            self._auction.setStyleSheet("QLabel{color:#00E676;}")
-            self._session.setText('After market')
-            self._session.setStyleSheet("QLabel{color:#f39c12;}")
+        elif self.isTrading:
+            if state == 1:
+                self._session.setText('Pre-market')
+                self._session.setStyleSheet("QLabel{color:#f39c12;}")
+            elif state == 2:
+                self._session.setText('Regular')
+                self._session.setStyleSheet("QLabel{color:#aaaaaa;}")
+            elif state == 3:
+                self._session.setText('Post-market')
+                self._session.setStyleSheet("QLabel{color:#f39c12;}")
 
 
     def updateChangeField(self):
@@ -241,6 +264,20 @@ class WatchlistItem(QWidget):
             self.dayDirection = 0
             self._change.setStyleSheet("QLabel{color:#aaaaaa;}")
         self.lastKnownDayDirection = self.dayDirection
+
+    def positionChanged(self, delta):
+        self.position += delta
+        self._position.setText(str(self.position))
+        if self.position > 0:
+            self._position.setStyleSheet("QLabel{color:#00E676;}")
+            self._margin.setStyleSheet('QLabel{color: #00E676;}')
+        elif self.position < 0:
+            self._position.setStyleSheet('QLabel{color: #ff5252;}')
+            self._margin.setStyleSheet('QLabel{color: #00E676;}')
+        else:
+            self._position.setStyleSheet('QLabel{color: #777777;}')
+            self._margin.setStyleSheet('QLabel{color: #777777;}')
+            self._margin.setText('0')
 
 
     def resetAllFields(self):
@@ -262,7 +299,21 @@ class WatchlistItem(QWidget):
         self._auction.setStyleSheet("QLabel{color:#777777;}")
         self._session.setText('Closed')
         self._session.setStyleSheet("QLabel{color:#777777;}")
+        self.isTrading = False
 
+    def trade_activity_detected(self):
+        self.isTrading = True
+        self._auction.setText('Open')
+        self._auction.setStyleSheet("QLabel{color:#00E676;}")
+        if self.mktState in [0, 2]:
+            self._session.setText('Regular')
+            self._session.setStyleSheet("QLabel{color:#aaaaaa;}")
+        elif self.mktState == 1:
+            self._session.setText('Pre-market')
+            self._session.setStyleSheet("QLabel{color:#f39c12;}")
+        elif self.mktState == 3:
+            self._session.setText('Post-market')
+            self._session.setStyleSheet("QLabel{color:#f39c12;}")
 
     def _update(self, tickType, value):
         if value == -1:
@@ -275,9 +326,11 @@ class WatchlistItem(QWidget):
             if self.prevClose != .0:
                 self.change = 100. * (value - self.prevClose) / self.prevClose
                 self.updateChangeField()
-            if self.auctionState == -1:
-                self.requestMarketState.emit()
-                self.auctionState = 1
+            if self.position != 0: self._margin.setText(str( round( abs(self.position) * value, 2 ) ))
+            # if self.auctionState == -1:
+            #     self.requestMarketState.emit()
+            #     self.auctionState = 1
+            if not self.isTrading: self.trade_activity_detected()
         elif tickType == 1:
             self._bid.last = value
             self._bid.setText(str(self._bid.last))
@@ -293,3 +346,6 @@ class WatchlistItem(QWidget):
 
     def _remove(self):
         self.remove.emit(self.reqId)
+
+    def _settings(self):
+        self.update_settings.emit(self.symbol)

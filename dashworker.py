@@ -28,7 +28,7 @@ class DashWorker(QObject):
     period = 'daily'
 
     wd = os.path.dirname(os.path.abspath(__file__))
-    data = pd.read_csv(wd+'/finance-charts-apple.csv')
+    data = pd.read_csv(wd+'/chart_template.csv')
     data.rename(columns=dict(zip(['AAPL.Open', 'AAPL.High', 'AAPL.Low', 'AAPL.Close'],['Open','High','Low','Close'])), inplace=True)
 
     graph_candlestick = go.Figure()

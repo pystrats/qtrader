@@ -3,8 +3,9 @@ from PyQt5.QtCore import Qt, QPoint
 
 
 class CustomMessageBox(QMessageBox):
-    def __init__(self):
+    def __init__(self, error=False):
         QMessageBox.__init__(self)
+        self.error = error
 
     def reinit(self, g):
 
@@ -31,14 +32,15 @@ class CustomMessageBox(QMessageBox):
         result = QMessageBox.event(self, e)
 
         self.setMinimumWidth(300)
-        self.setMinimumHeight(125)
+        min_height = 125 if not self.error else 250
+        self.setMinimumHeight(min_height)
 
         return result
 
 
 class InfoMessageBox(CustomMessageBox):
-    def __init__(self, title, txt):
-        CustomMessageBox.__init__(self)
+    def __init__(self, title, txt, error=False):
+        CustomMessageBox.__init__(self, error)
 
         okButton  = QPushButton('OK')
         okButton.setFixedSize(100,30)

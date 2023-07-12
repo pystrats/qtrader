@@ -8,6 +8,8 @@ CUDA Toolkit must be installed and GPU device enabled in order to run this scrip
 (https://developer.nvidia.com/cuda-toolkit)
 """
 
+VERSION                 = '1.1'
+
 # SETTINGS #####################################################################
 NUMBER_OF_STOCKS        = 100
 NUMBER_OF_DATAPOINTS    = 10000
@@ -247,7 +249,7 @@ def main(argv):
         prefix = '00' if stockNumber < 10 else '0'
         if stockNumber >= 100: prefix = ''
 
-        fileName = '{} {}.csv'.format(SYMBOL, datetime.now())
+        fileName = '{} {}.csv'.format(SYMBOL.upper(), str(datetime.now()).replace(':', '.'))
         with open(fileName, 'w', encoding='UTF8', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(header)
