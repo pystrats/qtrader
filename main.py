@@ -1314,11 +1314,15 @@ class TableWidget(QWidget):
                 return
 
             unixtime = int(response.json()['unixtime'])
+            nytime = response.json()['datetime']
         else:
             """DEBUG"""
             unixtime = 1685003072
+            nytime = datetime.now()
 
-        edt = datetime.utcfromtimestamp(unixtime)
+        # edt = datetime.utcfromtimestamp(unixtime)
+        edt = parser.parse(nytime)
+        edt = datetime(edt.year, edt.month, edt.day, edt.hour, edt.minute, edt.second)
         local = datetime.now()
         if edt > local:
             self.currentTimeISAheadOfEDT = False
@@ -1651,7 +1655,7 @@ class TableWidget(QWidget):
                     seconds_to_close = 60 - seconds_to_close
                 self.maxT = self.sessionToday['marketClose'] - minutes_to_close * 100 + seconds_to_close
             self.positionsCLosedToday = False
-        if self.timeInfoReady: self.clockTime.setText(t.strftime("%I:%M:%S %p") + ' (EDT)')
+        if self.timeInfoReady: self.clockTime.setText(t.strftime("EDT %I:%M:%S %p"))
         self.mktState = self.mapTimeToMktState(t)
         if self.mktState != self.prevMktState:
             self.prevMktState = self.mktState
