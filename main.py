@@ -1207,7 +1207,7 @@ class TableWidget(QWidget):
     def log(self, level, msg):
         t = datetime.now() + self.timeMultiplier * timedelta(hours=self.timeDIfferenceWithEDT)
         t = t.strftime("%Y-%m-%d %I:%M:%S.%f %p")
-        fullMsg = '{} [{}] {}'.format(t, level.upper(), msg)
+        fullMsg = '{} [{}] {}\n'.format(t, level.upper(), msg)
         rowPosition = self.logTable.rowCount()
         self.logTable.insertRow(rowPosition)
         self.logTable.setItem(rowPosition, 0, QTableWidgetItem(fullMsg))
