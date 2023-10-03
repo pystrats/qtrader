@@ -164,7 +164,7 @@ class Downloader(QObject):
     def subscribe_to_all_streaming(self):
         n = 0
         for reqId, contractDescription in self.watchlist.items():
-            if self.success[n]:
+            if n < len(self.success) and self.success[n]:
                 contract = self.watchlist[reqId].contract
                 self.statusMag.emit('Subscribing to streaming data [{}]...'.format(self.watchlist[reqId].contract.symbol))
                 logMsg = 'Subscribing to streaming data {} {} {} {} {} {} {}'.format(

@@ -85,6 +85,7 @@ class WatchlistItem(QWidget):
 
         self.symbol = contract.symbol
         self.exchange = contract.primaryExchange if contract.primaryExchange not in ['', ' '] else contract.exchange
+        if contract.secType == "CASH": self.exchange = 'IDEALPRO'
         self.prevClose = .0
         self.change = .0
         self.dayHigh = .0

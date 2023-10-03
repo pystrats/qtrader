@@ -797,7 +797,7 @@ class TableWidget(QWidget):
         self.show_gauge_panel = False
 
         self.REQUEST_LIMIT_PER_SECOND = 25
-        self.MIN_DATAPOINTS_REQUIRED = 3000  # 2680
+        self.MIN_DATAPOINTS_REQUIRED = 6000  # 2680
         self.HISTORY_EXCESS_TO_LOAD_PERCENT = 30
         self.MAX_HISTORY_DEPTH_REALTIME = self.MIN_DATAPOINTS_REQUIRED * 1.5
         self.MAX_ATTEMPTS_TO_FETCH_TIMEZONE = 20
@@ -806,6 +806,7 @@ class TableWidget(QWidget):
         self.explorerReady = False
         self.explorerInitiated = False
         self.histDataRequestsActive = []
+        self.logActive = True
 
         self.CUDA_DEVICE_ID = 0
         self.THREADS_PER_BLOCK = 128
@@ -1077,7 +1078,9 @@ class TableWidget(QWidget):
         for symIX in range(len(self.watchlist.keys())):
             for algoIX in range(len(self.preset_data.keys())):
                 value = self.positions[ watchlist_keys[symIX] ]['positions'][ preset_keys[algoIX] ]
-                self.posTable.setItem(symIX, algoIX, QTableWidgetItem( str(value) ))
+                w_item = QTableWidgetItem( str(value) )
+                w_item.setTextAlignment(Qt.AlignCenter)
+                self.posTable.setItem(symIX, algoIX, w_item)
                 if value > 0:
                     self.posTable.item(symIX, algoIX).setBackground(QColor(0,230,118))
                     self.posTable.item(symIX, algoIX).setForeground(QBrush(QColor(100, 100, 100)))
@@ -1212,7 +1215,7 @@ class TableWidget(QWidget):
         self.logTable.insertRow(rowPosition)
         self.logTable.setItem(rowPosition, 0, QTableWidgetItem(fullMsg))
         fileName = self.logInfo if level == 'info' else self.logError
-        if not self.debug:
+        if not self.debug and self.logActive:
             with open(fileName, 'a+') as f: f.write(fullMsg)
 
     def update_position_table(self):
@@ -1318,7 +1321,7 @@ class TableWidget(QWidget):
         else:
             """DEBUG"""
             unixtime = 1685003072
-            nytime = datetime.now()
+            nytime = '2023-07-14 17:05:00'
 
         # edt = datetime.utcfromtimestamp(unixtime)
         edt = parser.parse(nytime)
@@ -1789,6 +1792,7 @@ class TableWidget(QWidget):
         self.tableWidget.horizontalHeader().setVisible(True)
         self.tableWidget.verticalHeader().setVisible(False)
         self.tableWidget.setHorizontalHeaderLabels( ['Symbol', 'Algorithm', 'Qty'] )
+
         self.tableWidget.move(0,0)
 
         # table selection change
