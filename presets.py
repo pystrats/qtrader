@@ -186,7 +186,7 @@ class PresetEdit(QWidget):
         self.screen = QApplication.primaryScreen()
         self.screenWidth = self.screen.size().width()
         self.screenHeight = self.screen.size().height()
-        self.move(self.screenWidth/2. - self.width/2., self.screenHeight/2. - self.height/2.)
+        self.move(int(self.screenWidth/2. - self.width/2.), int(self.screenHeight/2. - self.height/2.))
 
         self.setFixedWidth(self.width)
         self.setFixedHeight(self.height)
@@ -422,7 +422,7 @@ class Presets(QWidget):
         self.screen = QApplication.primaryScreen()
         self.screenWidth = self.screen.size().width()
         self.screenHeight = self.screen.size().height()
-        self.move(self.screenWidth/2. - self.width/2., self.screenHeight/7.)
+        self.move(int(self.screenWidth/2. - self.width/2.), int(self.screenHeight/7.))
 
         self.setFixedWidth(self.width)
         self.setFixedHeight(self.screenHeight*.75)

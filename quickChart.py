@@ -107,7 +107,7 @@ class QuickChart(QWidget):
         self.width = int(self.screenWidth*.8)
         self.height = int(self.screenHeight*.7)
         self.resize(self.width, self.height)
-        self.move(self.screenWidth/2. - self.width/2., self.screenHeight/2. - self.height/2.)
+        self.move(int(self.screenWidth/2. - self.width/2.), int(self.screenHeight/2. - self.height/2.))
 
     def dataReceived(self, data):
         self.item.updateData(data)
