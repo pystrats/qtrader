@@ -24,7 +24,6 @@ class SuggestionPlaceModel(QtGui.QStandardItemModel):
         if self._reply is not None:
             self._reply.abort()
         if text:
-            print(text)
             self.create_request(text)
             # self._reply = self._manager.get(r)
             # self._reply = r

@@ -7,8 +7,10 @@ import functools
 
 
 class AnimatedWidget(QLabel):
-    def __init__(self):
+    def __init__(self, animated=False):
         super().__init__()
+
+        self.animated = animated
 
         self._animationIncreasing = QVariantAnimation(
             self,
@@ -61,9 +63,13 @@ class AnimatedWidget(QLabel):
     def animate(self):
         if not self.prevLast == .0:
             if self.last > self.prevLast:
-                self.animateIncreasing()
+                if self.animated: 
+                    self.animateIncreasing()
+                else: self.setStyleSheet('QLabel{color:#00E676}')
             elif self.last < self.prevLast:
-                self.animateDecreasing()
+                if self.animated:
+                    self.animateDecreasing()
+                else: self.setStyleSheet('QLabel{color:#ff5252}')
         self.prevLast = self.last
 
 
@@ -73,10 +79,12 @@ class WatchlistItem(QWidget):
     requestMarketState = pyqtSignal()
     update_settings = pyqtSignal(str)
 
-    def __init__(self, reqId, contract, position, parent=None):
+    def __init__(self, reqId, contract, position, animated=True, parent=None):
         super().__init__(parent)
 
         self.MIN_TIME_BETWEEN_ANIMATIONS = .5
+
+        self.animated = animated
 
         self.reqId = reqId
 
@@ -115,9 +123,9 @@ class WatchlistItem(QWidget):
         self._change = QLabel('-')
         self._dayHigh = QLabel('-')
         self._dayLow = QLabel('-')
-        self._bid = AnimatedWidget()
-        self._last = AnimatedWidget()
-        self._ask = AnimatedWidget()
+        self._bid = AnimatedWidget(animated=self.animated)
+        self._last = AnimatedWidget(animated=self.animated)
+        self._ask = AnimatedWidget(animated=self.animated)
         self._position = QLabel('0')
         self._risk = QLabel('0')
         self._execution = QLabel(self.execution)
@@ -274,7 +282,7 @@ class WatchlistItem(QWidget):
             self._margin.setStyleSheet('QLabel{color: #00E676;}')
         elif self.position < 0:
             self._position.setStyleSheet('QLabel{color: #ff5252;}')
-            self._margin.setStyleSheet('QLabel{color: #00E676;}')
+            self._margin.setStyleSheet('QLabel{color: #ff5252;}')
         else:
             self._position.setStyleSheet('QLabel{color: #777777;}')
             self._margin.setStyleSheet('QLabel{color: #777777;}')

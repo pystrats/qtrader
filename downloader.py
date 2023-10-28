@@ -2,6 +2,8 @@ from PyQt5.QtCore import Qt, pyqtSlot, QObject, QThread, pyqtSignal
 from time import sleep
 from datetime import datetime
 import numpy as np
+from copy import deepcopy
+import dateutil.parser as parser
 
 
 class Downloader(QObject):
@@ -16,20 +18,29 @@ class Downloader(QObject):
     start_signal = pyqtSignal()
     update_hist_request_time = pyqtSignal()
     download_sequence_finished = pyqtSignal(object, object,  object)
+    transmitDataToMain = pyqtSignal(object)
 
     MAX_SUBSCRIPTION_REQUESTS_PER_SECOND = 10
     MAX_SIMULTANEOUS_HIST_DATA_CONNECTIONS = 10
     MAX_TIMEOUT_SECONDS = 240
 
-    MIN_DATAPOINTS_REQUIRED = 100 # 2680
+    MIN_DATAPOINTS_REQUIRED = 10 # 2680
     HISTORY_EXCESS_TO_LOAD_PERCENT = 30
     TIMEFRAME = 1
     MIN_1MIN_HISTORY_BARS_REQUIRED = MIN_DATAPOINTS_REQUIRED
 
     reqId = 1000000
 
+    data = {}
+
+    period = '30 mins'
+    dtFormat = '%Y%m%d' if period in ['daily', 'weekly'] else '%Y%m%d %H:%M:%S'
+    
+
     def receive_watchlist(self, watchlist):
         self.watchlist = watchlist
+        for reqId in self.watchlist:
+            self.data[self.watchlist[reqId].contract.symbol] = {'datetime': [], 'open': [], 'high': [], 'low': [], 'close': [], 'volume': []}
 
     def receive_datapoint_requirement(self, min_datapoints_required, hist_excess):
         self.MIN_DATAPOINTS_REQUIRED = min_datapoints_required
@@ -37,8 +48,8 @@ class Downloader(QObject):
 
     def receive_settings(self, settings):
         self.settings = settings
-        self.TIMEFRAME = int(self.settings['strategy']['timeframe'])
-        self.MIN_1MIN_HISTORY_BARS_REQUIRED = int(self.TIMEFRAME * self.MIN_DATAPOINTS_REQUIRED * (100 + self.HISTORY_EXCESS_TO_LOAD_PERCENT)/100.)
+        # self.MIN_1MIN_HISTORY_BARS_REQUIRED = int(self.TIMEFRAME * self.MIN_DATAPOINTS_REQUIRED * (100 + self.HISTORY_EXCESS_TO_LOAD_PERCENT)/100.)
+        self.MIN_1MIN_HISTORY_BARS_REQUIRED = 10000
 
     def subscribe_to_streaming(self, reqId, contractDescription):
         self.subscribe.emit(reqId, contractDescription)
@@ -53,8 +64,14 @@ class Downloader(QObject):
 
     def data_received(self, reqId, bar):
         n = self.reqIds.index(reqId)
-        self.temp_timestamps[n].insert(0, bar.date)
+        dt = bar.date if self.period in ['daily', 'weekly'] else bar.date[:17]
+
+        self.temp_timestamps[n].insert(0, parser.parse(dt))
+        self.temp_opens[n].insert(0, bar.open)
+        self.temp_highs[n].insert(0, bar.high)
+        self.temp_lows[n].insert(0, bar.low)
         self.temp_closes[n].insert(0, bar.close)
+        self.temp_volumes[n].insert(0, int(bar.volume))
 
 
     def subscribe_to_streaming_data_by_index(self, n):
@@ -69,9 +86,23 @@ class Downloader(QObject):
     def data_end(self, reqId, start, end):
         n = self.reqIds.index(reqId)
         self.timestamps[n] += self.temp_timestamps[n]
+        self.opens[n] += self.temp_opens[n]
+        self.highs[n] += self.temp_highs[n]
+        self.lows[n] += self.temp_lows[n]
         self.closes[n] += self.temp_closes[n]
+        self.volumes[n] += self.temp_volumes[n]
         self.last_timestamp[n] = start
-        if len(self.closes[n]) >= self.MIN_1MIN_HISTORY_BARS_REQUIRED:
+
+        item = self.watchlist[list(self.watchlist)[n]]
+        symbol = item.contract.symbol
+        self.data[symbol]['datetime'] = deepcopy(self.timestamps[n])
+        self.data[symbol]['open'] = deepcopy(self.opens[n])
+        self.data[symbol]['high'] = deepcopy(self.highs[n])
+        self.data[symbol]['low'] = deepcopy(self.lows[n])
+        self.data[symbol]['close'] = deepcopy(self.closes[n])
+        self.data[symbol]['volume'] = deepcopy(self.volumes[n])
+
+        if len(self.closes[n]) >= self.MIN_1MIN_HISTORY_BARS_REQUIRED or self.watchlist[list(self.watchlist)[n]].contract.secType == 'STK':
             self.finished[n] = True
             self.success[n] = True
             self.status_change.emit( list(self.watchlist)[n] , 'ready')
@@ -79,7 +110,11 @@ class Downloader(QObject):
         self.active_connections -= 1
         for n in range(len(self.temp_timestamps)):
             self.temp_timestamps[n] = []
+            self.temp_opens[n] = []
+            self.temp_highs[n] = []
+            self.temp_lows[n] = []
             self.temp_closes[n] = []
+            self.temp_volumes[n] = []
         # self.subscribe_to_streaming_data_by_index(n)
         self.next_historical_data()
 
@@ -109,12 +144,12 @@ class Downloader(QObject):
                 self.update_hist_request_time.emit()
                 return
         if sum(self.finished) == len(self.finished):
-            self.subscribe_to_all_streaming()
             self.finalize()
 
 
     def finalize(self):
         self.data_status_update.emit('ready')
+        self.transmitDataToMain.emit(self.data)
         self.download_sequence_finished.emit(self.success, self.timestamps, self.closes)
         # self.status_change.emit( list(self.watchlist)[n] , 'ready')
 
@@ -139,7 +174,9 @@ class Downloader(QObject):
         self.req_times = []
         self.reqIds = []
         self.timestamps, self.closes = [], []
+        self.opens, self.highs, self.lows, self.volumes = [], [], [], []
         self.temp_timestamps, self.temp_closes = [], []
+        self.temp_opens, self.temp_highs, self.temp_lows, self.temp_volumes = [], [], [], []
         self.success = []
         self.last_timestamp = []
         self.active_connections = 0
@@ -148,9 +185,17 @@ class Downloader(QObject):
             self.symbols.append(self.watchlist[reqId].contract.symbol)
             self.active_requests.append(False)
             self.timestamps.append([])
+            self.opens.append([])
+            self.highs.append([])
+            self.lows.append([])
             self.closes.append([])
+            self.volumes.append([])
             self.temp_timestamps.append([])
             self.temp_closes.append([])
+            self.temp_highs.append([])
+            self.temp_lows.append([])
+            self.temp_opens.append([])
+            self.temp_volumes.append([])
             self.finished.append(False)
             self.req_times.append(0)
             self.reqIds.append(0)

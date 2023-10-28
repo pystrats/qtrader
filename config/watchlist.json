@@ -1,1 +1,9 @@
-{"BTC": {"exchange": "PAXOS", "primaryExchange": "PAXOS", "currency": "USD", "secType": "CRYPTO", "conId": 479624278}, "LTC": {"exchange": "PAXOS", "primaryExchange": "PAXOS", "currency": "USD", "secType": "CRYPTO", "conId": 498989715}, "ETH": {"exchange": "PAXOS", "primaryExchange": "PAXOS", "currency": "USD", "secType": "CRYPTO", "conId": 495759171}, "LINK": {"exchange": "PAXOS", "primaryExchange": "PAXOS", "currency": "USD", "secType": "CRYPTO", "conId": 541416658}, "BCH": {"exchange": "PAXOS", "primaryExchange": "PAXOS", "currency": "USD", "secType": "CRYPTO", "conId": 498989721}, "UNI": {"exchange": "PAXOS", "primaryExchange": "PAXOS", "currency": "USD", "secType": "CRYPTO", "conId": 541416664}, "AAVE": {"exchange": "PAXOS", "primaryExchange": "PAXOS", "currency": "USD", "secType": "CRYPTO", "conId": 541416669}, "MATIC": {"exchange": "PAXOS", "primaryExchange": "PAXOS", "currency": "USD", "secType": "CRYPTO", "conId": 541416663}}
+{
+    "ETH": {
+        "exchange": "",
+        "primaryExchange": "PAXOS",
+        "currency": "USD",
+        "secType": "CRYPTO",
+        "conId": 495759171
+    }
+}

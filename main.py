@@ -2,17 +2,19 @@ import sys, time, threading, os, random, math
 import threading
 from datetime import datetime, timedelta
 from copy import deepcopy
+from time import sleep
 import dateutil.parser as parser
+import sqlite3
 import json
+import psutil
+import signal
 import numpy as np
 
 import requests
 
-from numba import cuda
-
 from PyQt5.QtWidgets import (QMainWindow, QApplication, QPushButton, QWidget, QAction, QTabWidget, QVBoxLayout, QHBoxLayout,
             QLineEdit, QInputDialog, QLabel, QTableWidget, QTableWidgetItem, QGridLayout, QMessageBox, QStatusBar, QDesktopWidget,
-            QScrollArea, QShortcut, QAbstractButton, QDialogButtonBox, QFrame, QFileDialog, QHeaderView)
+            QScrollArea, QShortcut, QAbstractButton, QDialogButtonBox, QFrame, QFileDialog, QHeaderView, QAbstractItemView)
 from PyQt5.QtGui import QIcon, QIntValidator, QFont, QPalette, QColor, QKeySequence, QCloseEvent, QFontDatabase, QBrush
 from PyQt5.QtCore import Qt, pyqtSlot, QObject, QThread, pyqtSignal, QTimer, QTime
 from PyQt5.QtWebEngineWidgets import QWebEngineView
@@ -20,19 +22,27 @@ from PyQt5.QtWebEngineWidgets import QWebEngineView
 import dash
 from dash import dcc, html
 
-from connection import Trader, Connection
+from connection import QTraderConnection
 from chart import Chart
-from dashworker import DashWorker
+# from dashworker import DashWorker
 from completer import LineCompleterWidget
 from search import SearchWindow
 from msgboxes import InfoMessageBox, InfoWidget
 from watchlistitem import WatchlistItem
 from settings import Settings
-from presets import Presets
+# from presets import Presets
+from cancelOrder import CancelOrder
+from submitOrder import SubmitOrder
 from downloader import Downloader
 from pisettings import PortfolioItemSettings
 from explorer import Explorer
-import cudafns
+from equity import EquityPlot
+from table import CustomTable
+from reconnector import Reconnector
+from customClient import CustomEClient
+from quickChart import QuickChart
+from templates import *
+from globals import *
 
 from ibapi.contract import Contract
 from ibapi.order import Order
@@ -45,17 +55,18 @@ class App(QMainWindow):
 
     closeSignal = pyqtSignal()
 
-    exportTrades = pyqtSignal()
+    # exportTrades = pyqtSignal()
 
     def __init__(self):
         super().__init__()
-        self.title = 'QuantTrader'
+        self.title = 'QTrader'
         self.left = 10
         self.top = 10
         self.showExitDialogue = True
         self.exitDialogueShown = False
-        self.maximizeOnStartup = False
+        self.maximizeOnStartup = True
         self.setWindowTitle(self.title)
+        self.disableAutoRestart = False
 
         self.screen = QApplication.primaryScreen()
         self.screenWidth = self.screen.size().width()
@@ -75,6 +86,7 @@ class App(QMainWindow):
         fileMenu = mainMenu.addMenu('File')
         watchlistMenu = mainMenu.addMenu('Portfolio')
         viewMenu = mainMenu.addMenu('View')
+        actionMenu = mainMenu.addMenu('Action')
         helpMenu = mainMenu.addMenu('Help')
 
         exitButton = QAction(QIcon('exit24.png'), 'Exit', self)
@@ -90,11 +102,11 @@ class App(QMainWindow):
         settingsButton.triggered.connect(self.show_settings)
         fileMenu.addAction(settingsButton)
 
-        tradesExportButton = QAction(QIcon(), 'Export Trades', self)
-        tradesExportButton.setShortcut('Ctrl+Shift+T')
-        tradesExportButton.setStatusTip('Export Trades')
-        tradesExportButton.triggered.connect(self.export_trades)
-        fileMenu.addAction(tradesExportButton)
+        # tradesExportButton = QAction(QIcon(), 'Export Trades', self)
+        # tradesExportButton.setShortcut('Ctrl+Shift+T')
+        # tradesExportButton.setStatusTip('Export Trades')
+        # tradesExportButton.triggered.connect(self.export_trades)
+        # fileMenu.addAction(tradesExportButton)
 
         exportWatchlistButton = QAction(QIcon(), 'Export Portfolio', self)
         exportWatchlistButton.setShortcut('Ctrl+E')
@@ -131,18 +143,12 @@ class App(QMainWindow):
         self.statusBarDataStatusBox = QLabel('', self)
         self.statusBarDataStatusBox.setStyleSheet("background-color: red; min-width: 17px; height: 17px;")
 
-        self.statusBarCompileStatus = QLabel('Kernels: Not compiled', self)
-        self.statusBarCompileStatusBox = QLabel('', self)
-        self.statusBarCompileStatusBox.setStyleSheet("background-color: red; min-width: 17px; height: 17px;")
-
         self.statusBarComputeTimeMsg = QLabel('', self)
 
         self.statusMsgHolder.addWidget(self.statusBarConnectionMsg, alignment=Qt.AlignVCenter)
         self.statusMsgHolder.addWidget(self.connectionCircle, alignment=Qt.AlignVCenter)
         self.statusMsgHolder.addWidget(self.statusBarDataStatus, alignment=Qt.AlignVCenter)
         self.statusMsgHolder.addWidget(self.statusBarDataStatusBox, alignment=Qt.AlignVCenter)
-        self.statusMsgHolder.addWidget(self.statusBarCompileStatus, alignment=Qt.AlignVCenter)
-        self.statusMsgHolder.addWidget(self.statusBarCompileStatusBox, alignment=Qt.AlignVCenter)
         self.statusMsgHolder.addWidget(self.statusBarComputeTimeMsg, alignment=Qt.AlignVCenter)
         self.statusMsgHolderWidget.setLayout(self.statusMsgHolder)
 
@@ -156,10 +162,10 @@ class App(QMainWindow):
         self.table_widget.connectionEstablished.connect(self.on_connection_changed, Qt.DirectConnection)
         self.table_widget.status_message.connect(self.status_message, Qt.DirectConnection)
         self.table_widget.update_data_status.connect(self.data_status_update, Qt.DirectConnection)
-        self.table_widget.update_kernel_status.connect(self.kernel_status_update, Qt.DirectConnection)
         self.table_widget.update_compute_time.connect(self.compute_time_update, Qt.DirectConnection)
         self.table_widget.closeApp.connect(self.close_without_dialogue, Qt.DirectConnection)
-        self.exportTrades.connect(self.table_widget.export_trades, Qt.DirectConnection)
+        self.table_widget.restartApp.connect(self.restartWithDialogue, Qt.DirectConnection)
+        # self.exportTrades.connect(self.table_widget.export_trades, Qt.DirectConnection)
         self.setCentralWidget(self.table_widget)
 
         self.closeSignal.connect(self.close)
@@ -167,28 +173,58 @@ class App(QMainWindow):
         if self.maximizeOnStartup: self.showMaximized()
 
         # View
-        chartButton = QAction(QIcon(), 'Chart Window', self)
+        chartButton = QAction(QIcon(), 'Chart Window (deactivated)', self)
         chartButton.setShortcut('Ctrl+Shift+C')
         chartButton.setStatusTip('Open chart window')
         chartButton.triggered.connect(self.table_widget.open_chart_window)
         viewMenu.addAction(chartButton)
 
-        presetsButton = QAction(QIcon(), 'Strategy Presets', self)
-        presetsButton.setShortcut('Ctrl+Shift+P')
-        presetsButton.setStatusTip('Open strategy presets')
-        presetsButton.triggered.connect(self.table_widget.open_presets_window)
-        viewMenu.addAction(presetsButton)
+        # presetsButton = QAction(QIcon(), 'Strategy Presets', self)
+        # presetsButton.setShortcut('Ctrl+Shift+P')
+        # presetsButton.setStatusTip('Open strategy presets')
+        # presetsButton.triggered.connect(self.table_widget.open_presets_window)
+        # viewMenu.addAction(presetsButton)
 
-        explorerButton = QAction(QIcon(), 'Data Explorer', self)
-        explorerButton.setShortcut('Ctrl+Shift+D')
-        explorerButton.setStatusTip('Open Data Explorer')
-        explorerButton.triggered.connect(self.table_widget.open_explorer_window)
-        viewMenu.addAction(explorerButton)
+        # explorerButton = QAction(QIcon(), 'Data Explorer', self)
+        # explorerButton.setShortcut('Ctrl+Shift+D')
+        # explorerButton.setStatusTip('Open Data Explorer')
+        # explorerButton.triggered.connect(self.table_widget.open_explorer_window)
+        # viewMenu.addAction(explorerButton)
+
+        equityButton = QAction(QIcon(), 'Account Equity', self)
+        equityButton.setShortcut('Ctrl+Shift+R')
+        equityButton.setStatusTip('Open Equity Plot')
+        equityButton.triggered.connect(self.table_widget.show_equity_window)
+        viewMenu.addAction(equityButton)
+
+        """
+        qChartButton = QAction(QIcon(), 'Quick Chart', self)
+        # qChartButton.setShortcut('')
+        qChartButton.setStatusTip('Open Quick Chart')
+        qChartButton.triggered.connect(self.table_widget.show_quick_chart)
+        viewMenu.addAction(qChartButton)
+        """
+
+        # Action
+        submitOrderBtn = QAction(QIcon(), 'Submit Order', self)
+        submitOrderBtn.setShortcut('Ctrl+N')
+        submitOrderBtn.setStatusTip('Submit New Order')
+        submitOrderBtn.triggered.connect(self.table_widget.submit_order_window)
+        actionMenu.addAction(submitOrderBtn)
+
+        cancelOrderBtn = QAction(QIcon(), 'Cancel Order', self)
+        cancelOrderBtn.setShortcut('Ctrl+C')
+        cancelOrderBtn.setStatusTip('Cancel previously submitted order')
+        cancelOrderBtn.triggered.connect(self.table_widget.show_cancel_order_window)
+        actionMenu.addAction(cancelOrderBtn)
+
+        icon_path = '{}/{}/{}'.format( os.path.dirname(os.path.abspath(__file__)), 'resources', 'qtrader_icon128x128.png' )
+        self.setWindowIcon(QIcon(icon_path))
 
         self.show()
 
-    def export_trades(self):
-        self.exportTrades.emit()
+    # def export_trades(self):
+    #     self.exportTrades.emit()
 
     def data_status_update(self, status):
         if status == 'loading':
@@ -197,14 +233,6 @@ class App(QMainWindow):
         elif status == 'ready':
             self.statusBarDataStatus.setText('Data: Ready')
             self.statusBarDataStatusBox.setStyleSheet("background-color: green; min-width: 17px; height: 17px;")
-
-    def kernel_status_update(self, status):
-        if status == 'compiling':
-            self.statusBarCompileStatus.setText('Kernels: Compiling')
-            self.statusBarCompileStatusBox.setStyleSheet("background-color: #f39c12; min-width: 17px; height: 17px;")
-        elif status == 'ready':
-            self.statusBarCompileStatus.setText('Kernels: Compiled')
-            self.statusBarCompileStatusBox.setStyleSheet("background-color: green; min-width: 17px; height: 17px;")
 
     def compute_time_update(self, dt, t):
         self.statusBarComputeTimeMsg.setText('{} {} ms'.format(dt, t))
@@ -239,7 +267,7 @@ class App(QMainWindow):
                 'secType' : c.secType,
                 'conId' : c.conId
             }
-        return json.dumps(d)
+        return json.dumps(d, indent=4)
 
 
 
@@ -247,7 +275,7 @@ class App(QMainWindow):
         options = QFileDialog.Options()
         options |= QFileDialog.DontUseNativeDialog
         fileName, _ = QFileDialog.getSaveFileName(self,
-            "Save File", "portfolio.json", "All Files(*);;JSON Files(*.json)", options = options)
+            "Export Portfolio", "portfolio.json", "All Files(*);;JSON Files(*.json)", options = options)
         if fileName:
             with open(fileName, 'w') as f:
                 f.write(self.watchlistToJSON(self.table_widget.watchlist))
@@ -257,7 +285,7 @@ class App(QMainWindow):
     def import_watchlist(self):
         options = QFileDialog.Options()
         options |= QFileDialog.DontUseNativeDialog
-        fileName, _ = QFileDialog.getOpenFileName(self,"QFileDialog.getOpenFileName()", "","JSON Files (*.json)", options=options)
+        fileName, _ = QFileDialog.getOpenFileName(self,"Import Portfolio", "","JSON Files (*.json)", options=options)
         if fileName:
             with open(fileName) as f:
                 wl = json.load(f)
@@ -292,6 +320,54 @@ class App(QMainWindow):
             self.statusBarConnectionMsg.setText("Disconnected")
             self.connectionCircle.setStyleSheet("background-color: red; min-width: 17px; height: 100%;")
 
+    def shutdown_routine(self):
+        if self.table_widget.worker.isConnected():
+            try:
+                self.table_widget.worker.reqAccountUpdates(False, self.table_widget.worker.accountId)
+            except:
+                self.table_widget.log('error', 'Cancelling account updates subscription failed')
+            time.sleep(1/25.)
+        self.table_widget.log('info', 'Shutting down')
+
+    def restartWithDialogue(self):
+        if not self.disableAutoRestart:
+            self.warning = ExitMessageBox(width= 350, height=135)
+            self.time_to_wait = 10
+
+            timer = QTimer(self)
+            timer.setInterval(1000)
+            timer.timeout.connect(self.changeContent)
+            timer.start()
+
+            yesButton = QPushButton('Settings')
+            yesButton.setStyleSheet("QPushButton {background-color: #f39c12; color: #2a2a2a; font-weight: bold; border: 1px solid #2a2a2a;}")
+            yesButton.setFixedSize(100,30)
+            noButton  = QPushButton('Shutdown')
+            noButton.setFixedSize(100,30)
+
+            self.warning.addButton(yesButton, QMessageBox.YesRole)
+            self.warning.addButton(noButton, QMessageBox.NoRole)
+            self.warning.setWindowTitle('Restart')
+            self.warning.setText("No connection with IB TWS or IB Gateway\n\nRestarting in {0} seconds".format(self.time_to_wait))
+            g = self.frameGeometry()
+            self.warning.reinit(g)
+            ret = self.warning.exec_()
+            if ret == 0:
+                self.disableAutoRestart = True
+                self.show_settings()
+                return
+            else:
+                self.showExitDialogue = False
+                self.close()
+
+    def changeContent(self):
+        if not self.disableAutoRestart:
+            self.time_to_wait -= 1
+            self.warning.setText("No connection with IB TWS or IB Gateway\n\nRestarting in {0} seconds".format(self.time_to_wait))
+            if self.time_to_wait <= 0:
+                os.execv(sys.executable, ['python'] + sys.argv)
+
+
     def closeEvent(self, event):
         if self.showExitDialogue:
             warning = ExitMessageBox()
@@ -312,6 +388,7 @@ class App(QMainWindow):
             ret = warning.exec_()
             if ret == 0:
                 event.accept()
+                self.shutdown_routine()
             else:
                 event.ignore()
         else:
@@ -347,8 +424,8 @@ class App(QMainWindow):
 
     def getText(self):
         text, okPressed = QInputDialog.getText(self, "Get text","Your name:", QLineEdit.Normal, "")
-        if okPressed and text != '':
-            print(text)
+        # if okPressed and text != '':
+            # print(text)
 
     def show_about_window(self):
         self.about = AboutWindow()
@@ -360,8 +437,10 @@ class SymbolDescripttion:
         self.contract = contract
 
 class ExitMessageBox(QMessageBox):
-    def __init__(self):
+    def __init__(self, width=300, height=125):
         QMessageBox.__init__(self)
+        self.width = width
+        self.height = height
 
     def reinit(self, g):
 
@@ -387,8 +466,8 @@ class ExitMessageBox(QMessageBox):
     def event(self, e):
         result = QMessageBox.event(self, e)
 
-        self.setMinimumWidth(300)
-        self.setMinimumHeight(125)
+        self.setMinimumWidth(self.width)
+        self.setMinimumHeight(self.height)
 
         return result
 
@@ -472,17 +551,17 @@ class AboutWindow(QWidget):
         qtRectangle.moveCenter(centerPoint)
         self.move(qtRectangle.topLeft())
 
-        self.title = QLabel("QuantTrader")
+        self.title = QLabel("QTrader")
         self.title.setAlignment(Qt.AlignCenter)
-        self.title.setStyleSheet("QLabel {font-weight: bold; color: #eeeeee; font-size: 18px;}")
+        self.title.setStyleSheet("QLabel {font-weight: bold; color: #f39c12; font-size: 21px;}")
         layout.addWidget(self.title)
 
-        self.version = QLabel("Version: 1.0.000")
+        self.version = QLabel("Version: pre-release 0.0.1")
         self.version.setAlignment(Qt.AlignCenter)
         self.version.setStyleSheet("QLabel {color: #eeeeee; font-size: 15px;}")
         layout.addWidget(self.version)
 
-        self.releaseDate = QLabel("Release date: Jul 12, 2023")
+        self.releaseDate = QLabel("Release date: Oct 29, 2023")
         self.releaseDate.setAlignment(Qt.AlignCenter)
         self.releaseDate.setStyleSheet("QLabel {color: #eeeeee; font-size: 15px; margin-bottom: 30px;}")
         layout.addWidget(self.releaseDate)
@@ -520,7 +599,7 @@ class SymbolLookupWindow(QWidget):
 
 
 
-class Worker(QObject, Connection):
+class API(QObject, QTraderConnection):
 
     # def __init__(self):
     #     super(QObject, self).__init__()
@@ -533,71 +612,148 @@ class Worker(QObject, Connection):
     symbolInfo = pyqtSignal(int, object)
     toAutocompleter = pyqtSignal(object)
     amIConnected = pyqtSignal(bool)
+    amIConnectedOrder = pyqtSignal(bool)
     symInfoToChart = pyqtSignal(int, object)
+    symInfoToOrder = pyqtSignal(int, object)
     sendHistDataToChart = pyqtSignal(object)
     tick = pyqtSignal(int, int, float)
     log = pyqtSignal(str)
     transmit_data_to_downloader = pyqtSignal(int, object)
     tell_downloader_data_is_success = pyqtSignal(int, str, str)
     transmit_valid_id = pyqtSignal(int)
-    transmit_order_status = pyqtSignal(int, int, float)
+    # transmit_order_status = pyqtSignal(int, int, float)
     transmit_commission = pyqtSignal(int, float)
+    transmit_account_info = pyqtSignal(str, str, str, str)
+    transmit_position = pyqtSignal(str, str, float, float, float, float, float, float, str)
+    transmit_open_order = pyqtSignal(int, object, object, object)
+    transmit_order_status = pyqtSignal(int, str, float, float, float, int)
+    reconnected = pyqtSignal()
+    tramsmitDataToMain = pyqtSignal(str, object)
+    tellMainDataEnded = pyqtSignal(str)
 
     contractRequestOrigin  = 'unknown'
     sourcesByReqId = {}
     histData = {}
 
-    period = 'daily'
+    nonDownloaderReqIds = []
+    nonDownloaderSymbols = []
 
-    def initiate(self):
-        Connection.__init__(self, '127.0.0.1', 7497, 0)
+    period = 'daily'
+    connection_attempts = 0
+
+    block502error = False
+
+    # host = '127.0.0.1'
+    # port = 4002
+    # clientId = 0
+
+    validOrderId = 0
+
+    def timeout(self):
+        time.sleep(0)
+
+    # def initiate(self):
+        # Connection.__init__(self, '127.0.0.1', 7497, 0)
         # super().connect(self.host, self.port, self.clientID)
         # time.sleep(1.5)
         # super().run()
 
-    def run(self):
-        if not self.connectionEstablished:
-            super().connect(self.host, self.port, self.clientID)
-            print("serverVersion: %s connectionTime: %s" % (self.serverVersion(),
-                                                          self.twsConnectionTime()))
-            # time.sleep(1)
-            self.connectionEstablished = True
-            self.connected.emit(1)
-            super().run()
+    def adjust_connection_settings(self, port, clientId, accountId, host = '127.0.0.1'):
+        self.host = host
+        self.port = int(port)
+        self.clientID = int(clientId)
+        self.accountId = accountId
 
-            # try:
-            #     super().connect(self.host, self.port, self.clientID)
-            #     print("serverVersion: %s connectionTime: %s" % (self.serverVersion(),
-            #                                                   self.twsConnectionTime()))
-            #     # time.sleep(1)
-            #     self.connectionEstablished = True
-            #     self.connected.emit(1)
-            #     super().run()
-            #     print(super().isConnected())
-            # except:
-            #     self.connected.emit(0)
+    def submitSampleOrder(self):
+        self.validOrderId = 8
+        order = Order()
+        order.action = 'BUY'
+        order.totalQuantity = 100
+        order.orderType, order.transmit, order.eTradeOnly, order.firmQuoteOnly = 'LMT', True, False, False
+        order.lmtPrice = 172.5
+        contract = Contract()
+        contract.symbol, contract.secType, contract.exchange, contract.currency = 'AAPL', 'STK', 'SMART', 'USD'
+        self.placeOrder(self.validOrderId, contract, order)
+        
+    def reconnect(self):
+        self.block502error = True
+        if not self.isConnected():
+            try:
+                self.connect()
+                self.block502error = False
+                self.reconnected.emit()
+            except Exception as e: print(e) 
+
+    def __run(self):
+        
+        if self.isConnected():
+            try:
+                self.reqAccountUpdates(True, self.accountId)
+                self.reqAllOpenOrders()
+                super().run()
+            except:
+                self.log.emit('Failed launching the message loop. Disconnecting')
+                self._disconnect()
+
+    def connect(self):
+        if not self.isConnected():
+            try:
+                super().connect(self.host, self.port, self.clientID)
+            except:
+                print('Connection attempt failed')
+            else:
+                if not self.isConnected(): print('Bad connection')
+                else:
+                    self.connected.emit(1)
+                    self.reqAccountUpdates(True, self.accountId)
+                    self.reqAllOpenOrders()
+                    super().run()
+
+
+    def submit_order(self, order, contract):
+        self.validOrderId += 1
+        self.placeOrder(self.validOrderId, contract, order)
+
+
+    def cancel_order(self, orderId):
+        self.cancelOrder(orderId, "")
 
     def connectionStatus(self):
+        # self.timeout()
         self.amIConnected.emit(self.isConnected())
+
+    def connectionStatusOrder(self):
+        # self.timeout()
+        self.amIConnectedOrder.emit(self.isConnected())
 
 
     # @pyqtSlot()
     def sym_search(self, arg, source):
-        if source == 'chart': self.contractRequestOrigin = 'chart'
+        # self.timeout()
+        if source == 'chart': 
+            self.contractRequestOrigin = 'chart'
+        elif source == 'order':
+            self.contractRequestOrigin = 'order'
         try:
             self.reqMatchingSymbols(218, arg)
         except:
-            if source == 'chart' : self.symInfoToChart.emit(0, 0)
+            if source == 'chart' : 
+                self.symInfoToChart.emit(0, 0)
+            elif source == 'order':
+                self.symInfoToOrder.emit(0, 0)
             else: self.symbolInfo.emit(0, 0)
         # signalEmitted.emit()
 
     def nextValidId(self, orderId: int):
         super().nextValidId(orderId)
+        # self.timeout()
         self.transmit_valid_id.emit(orderId)
+        self.validOrderId = orderId - 1
 
 
     def error(self, reqId, errorCode, errorString, advancedOrderRejectJson=None):
-        if errorCode == 502:
+        # self.timeout()
+        if False and errorCode == 502 and not self.block502error:
             self.emit_error.emit(errorCode, errorString)
         super().error(reqId, errorCode, errorString, advancedOrderRejectJson)
         errorMsg = '[{}] {}'.format(errorCode, errorString)
@@ -618,31 +774,102 @@ class Worker(QObject, Connection):
             response[contractDescription.contract.symbol] = e
         return response
 
+    def updateAccountValue(self, key: str, val: str, currency: str, accountName: str):
+        # print('Transmitting {} {} {} {}'.format(key, val, currency, accountName))
+        super().updateAccountValue(key, val, currency, accountName)
+        # self.timeout()
+        self.transmit_account_info.emit(key, val, currency, accountName)
+        # print("UpdateAccountValue. Key:", key, "Value:", val, "Currency:", currency, "AccountName:", accountName)
+
+    def updatePortfolio(self, contract, position, marketPrice: float, marketValue: float, averageCost: float, unrealizedPNL: float, realizedPNL: float, accountName: str):
+        super().updatePortfolio(contract, position, marketPrice, marketValue, averageCost, unrealizedPNL, realizedPNL, accountName)
+        # print("UpdatePortfolio.", "Symbol:", contract.symbol, "SecType:", contract.secType, "Exchange:",
+        #       contract.exchange, "Position:", position, "MarketPrice:", marketPrice,
+        #       "MarketValue:", marketValue, "AverageCost:", averageCost,
+        #       "UnrealizedPNL:", unrealizedPNL, "RealizedPNL:", realizedPNL,
+        #       "AccountName:", accountName)
+        # self.timeout()
+        exchange = contract.primaryExchange if contract.exchange == '' else contract.exchange
+        self.transmit_position.emit(str(contract.symbol), str(exchange), float(position), float(marketPrice), float(averageCost), float(marketValue), float(unrealizedPNL), float(realizedPNL), str(accountName))
+
+    '''
+    def openOrder(self, orderId, contract, order, orderState):
+        print('Receiving order info')
+        super().openOrder(orderId, contract, order, orderState)
+        print("OpenOrder. PermId:", order.permId, "ClientId:", order.clientId, " OrderId:", orderId, 
+              "Account:", order.account, "Symbol:", contract.symbol, "SecType:", contract.secType,
+              "Exchange:", contract.exchange, "Action:", order.action, "OrderType:", order.orderType,
+              "TotalQty:", order.totalQuantity, "CashQty:", order.cashQty, 
+              "LmtPrice:", order.lmtPrice, "AuxPrice:", order.auxPrice, "Status:", orderState.status,
+              "MinTradeQty:", order.minTradeQty, "MinCompeteSize:", order.minCompeteSize,
+              "MidOffsetAtWhole:", order.midOffsetAtWhole,"MidOffsetAtHalf:" ,order.midOffsetAtHalf,
+              "FAGroup:", order.faGroup, "FAMethod:", order.faMethod)
+    '''
+
+    '''
+    def orderStatus(self, orderId, status: str, filled, 
+                    remaining, avgFillPrice: float, permId: int,
+                    parentId: int, lastFillPrice: float, clientId: int,
+                    whyHeld: str, mktCapPrice: float):
+        super().orderStatus(orderId, status, filled, remaining,
+                            avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice)
+        print("OrderStatus. Id:", orderId, "Status:", status, "Filled:", filled,
+              "Remaining:", remaining, "AvgFillPrice:", avgFillPrice,
+              "PermId:", permId, "ParentId:", parentId, "LastFillPrice:",
+              lastFillPrice, "ClientId:", clientId, "WhyHeld:",
+              whyHeld, "MktCapPrice:", mktCapPrice)
+    '''
+
+
+    def openOrderEnd(self):
+        super().openOrderEnd()
+
 
     def symbolSamples(self, reqId, contractDescriptions):
         # super().symbolSamples(reqId, contractDescriptions)
+        # self.timeout()
         if self.contractRequestOrigin == 'chart':
             self.symInfoToChart.emit(1, contractDescriptions)
+        elif self.contractRequestOrigin == 'order':
+            self.symInfoToOrder.emit(1, contractDescriptions)
         else: self.symbolInfo.emit(1, contractDescriptions)
         self.contractRequestOrigin = 'unknown'
 
     def openOrder(self, orderId, contract, order, orderState):
+        # self.timeout()
         super().openOrder(orderId, contract, order, orderState)
         msg = '[openOrder] ID {} Symbol {} {} {} Commissions {}'.format(orderId, contract.symbol, order.action, order.totalQuantity, round(orderState.commission, 6))
         self.log.emit(msg)
         commission = round(orderState.commission, 6)
         if commission > 0: self.transmit_commission.emit(orderId, commission)
+        # print("OpenOrder. PermId:", order.permId, "ClientId:", order.clientId, " OrderId:", orderId, 
+        #       "Account:", order.account, "Symbol:", contract.symbol, "SecType:", contract.secType,
+        #       "Exchange:", contract.exchange, "Action:", order.action, "OrderType:", order.orderType,
+        #       "TotalQty:", order.totalQuantity, "CashQty:", order.cashQty, 
+        #       "LmtPrice:", order.lmtPrice, "AuxPrice:", order.auxPrice, "Status:", orderState.status,
+        #       "MinTradeQty:", order.minTradeQty, "MinCompeteSize:", order.minCompeteSize,
+        #       "MidOffsetAtWhole:", order.midOffsetAtWhole,"MidOffsetAtHalf:" ,order.midOffsetAtHalf,
+        #       "FAGroup:", order.faGroup, "FAMethod:", order.faMethod)
+        self.transmit_open_order.emit(orderId, contract, order, orderState)
+        
 
     def orderStatus(self, orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice):
+        # self.timeout()
         super().orderStatus(orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice)
         msg = '[orderStatus] ID {} Status {} Filled {} Remaining {} VWAP {}'.format(orderId, status, str(filled), str(remaining), str(avgFillPrice))
         self.log.emit(msg)
-        self.transmit_order_status.emit( int(orderId), int(remaining), float(avgFillPrice) )
+        # print("OrderStatus. Id:", orderId, "Status:", status, "Filled:", filled,
+        #       "Remaining:", remaining, "AvgFillPrice:", avgFillPrice,
+        #       "PermId:", permId, "ParentId:", parentId, "LastFillPrice:",
+        #       lastFillPrice, "ClientId:", clientId, "WhyHeld:",
+        #       whyHeld, "MktCapPrice:", mktCapPrice)
+        
+        self.transmit_order_status.emit(int(orderId), str(status), float(filled), float(remaining), float(avgFillPrice), int(permId))
 
     def cancel_historical_data(self, reqId):
         self.cancelHistoricalData(reqId)
 
-    def downloader_requested_data(self, reqId, endDateTime, RTH_only, contract):
+    def prepareContract(self, contract):
         dataType = "ADJUSTED_LAST"
         if contract.secType == "STK":
             contract.exchange = "SMART"
@@ -655,11 +882,19 @@ class Worker(QObject, Connection):
         if contract.secType == "CRYPTO":
             contract.exchange = "PAXOS"
             dataType = "AGGTRADES"
+        return dataType
 
+    def downloader_requested_data(self, reqId, endDateTime, RTH_only, contract):
+        dataType = self.prepareContract(contract)
         useRTH = 1 if RTH_only else 0
+        self.reqHistoricalData(reqId, contract, endDateTime, "1 M", "30 mins", dataType, useRTH, 1, False, [])
 
-        self.reqHistoricalData(reqId, contract, endDateTime, "3 D", "1 min", dataType, useRTH, 1, False, [])
-
+    def reqHistDataOneSymbol(self, reqId, contract, RTHonly=True):
+        self.nonDownloaderReqIds.append(reqId)
+        self.nonDownloaderSymbols.append(contract.symbol)
+        dataType = self.prepareContract(contract)
+        useRTH = 1 if RTHonly else 0
+        self.reqHistoricalData(reqId, contract, "", "1 M", "30 mins", dataType, useRTH, 1, False, [])
 
 
     def getHistData(self, reqId, contractDescription, period):
@@ -708,7 +943,9 @@ class Worker(QObject, Connection):
                 reqLookback = "2 D"
 
             self.reqHistoricalData(reqId, contract, '', reqLookback, reqPeriod, "MIDPOINT", 1, 1, False, [])
-        except: msgBox = InfoMessageBox('Error', 'Historical data request failed')
+        except: 
+            msg = 'Error Historical data request failed'
+            self.log.emit(msg)
 
     def historicalData(self, reqId:int, bar):
         # print("HistoricalData. ReqId:", reqId, "BarData.",
@@ -718,6 +955,7 @@ class Worker(QObject, Connection):
         # type(bar.close),
         # type(bar.volume)
         # )
+        # self.timeout()
         if reqId in self.sourcesByReqId.keys():
             dtFormat = '%Y%m%d' if self.period in ['daily', 'weekly'] else '%Y%m%d %H:%M:%S'
             if self.period in ['30min', '5min']: dtFormat = '%Y%m%d %H:%M:%S.%f'
@@ -728,14 +966,23 @@ class Worker(QObject, Connection):
             self.histData[reqId]['Low'].append(bar.low)
             self.histData[reqId]['Close'].append(bar.close)
             self.histData[reqId]['Volume'].append(bar.volume)
+        elif reqId in self.nonDownloaderReqIds:
+            n = self.nonDownloaderReqIds.index(reqId)
+            symbol = self.nonDownloaderSymbols[n]
+            self.tramsmitDataToMain.emit(symbol, bar)
         else:
             self.transmit_data_to_downloader.emit(reqId, bar)
 
 
     def historicalDataEnd(self, reqId: int, start: str, end: str):
+        # self.timeout()
         super().historicalDataEnd(reqId, start, end)
         if reqId in self.sourcesByReqId.keys():
             self.sendHistDataToChart.emit(self.histData[reqId])
+        elif reqId in self.nonDownloaderReqIds:
+            n = self.nonDownloaderReqIds.index(reqId)
+            symbol = self.nonDownloaderSymbols[n]
+            self.tellMainDataEnded.emit(symbol)
         else: self.tell_downloader_data_is_success.emit(reqId, start, end)
         # print("HistoricalDataEnd. ReqId:", reqId, "from", start, "to", end)
 
@@ -782,12 +1029,16 @@ class TableWidget(QWidget):
     status_message = pyqtSignal(str)
     sendMktStateToWatchlist = pyqtSignal(int)
     update_data_status = pyqtSignal(str)
-    update_kernel_status = pyqtSignal(str)
     update_compute_time = pyqtSignal(str, int)
     tell_downloader_to_stop = pyqtSignal()
     data_to_explorer = pyqtSignal(object, object, object)
     transmit_order = pyqtSignal(int, object, object)
     closeApp = pyqtSignal()
+    restartApp = pyqtSignal()
+    tell_worker_to_cancel_order = pyqtSignal(int)
+    symbols_to_qchart = pyqtSignal(object)
+    sendDataToQChart = pyqtSignal(object)
+    subscribe_to_all_streaming = pyqtSignal()
 
     def __init__(self, parent):
         super(QWidget, self).__init__(parent)
@@ -795,22 +1046,24 @@ class TableWidget(QWidget):
         self.debug = False
         self.useTimeAPI = False
         self.show_gauge_panel = False
+        self.debugMode = 0  # 0 - Off        
+                            # 1 - Changes in tables
 
         self.REQUEST_LIMIT_PER_SECOND = 25
-        self.MIN_DATAPOINTS_REQUIRED = 6000  # 2680
+        self.MIN_DATAPOINTS_REQUIRED = 11  # 2680
         self.HISTORY_EXCESS_TO_LOAD_PERCENT = 30
         self.MAX_HISTORY_DEPTH_REALTIME = self.MIN_DATAPOINTS_REQUIRED * 1.5
         self.MAX_ATTEMPTS_TO_FETCH_TIMEZONE = 20
-        self.histDataRequestId = 1000000
+        self.histReqId = 1000000
         self.symbols = []
         self.explorerReady = False
         self.explorerInitiated = False
         self.histDataRequestsActive = []
         self.logActive = True
+        self.data = {}
 
         self.CUDA_DEVICE_ID = 0
         self.THREADS_PER_BLOCK = 128
-        self.MIN_DATAPOINTS = cudafns.MIN_DATAPOINTS
 
 
         self.isConnected = False
@@ -823,11 +1076,18 @@ class TableWidget(QWidget):
         self.settings = {}
         self.read_settings()
 
-        self.TIMEFRAME = int(self.settings['strategy']['timeframe'])
-        self.MIN_1MIN_HISTORY_BARS_REQUIRED = self.TIMEFRAME * self.MIN_DATAPOINTS_REQUIRED * int((100 + int(self.settings['strategy']['hist_excess']))/100.)
         self.historicalDataReady = False
         self.lastHistoricalDataRequest = None
         self.MAX_HISTORICAL_DATA_TIMEOUT_SECONDS = 240
+
+        self.CONNECTION_STATUS_CHECK_FREQUENCY_SECONDS = 1
+        self.connection_seconds_elapsed_since_last_check = 0
+        self.MAX_RECONNECTION_ATTEMPTS = 18
+        self.SECONDS_BETWEEN_CONNECTION_ATTEMPTS = 10
+        self.initialConnectionEstablished = False
+        self.reconnectionInProgress = False
+        self.RESTART_TIMEOUT_SEC = 1
+        self.secSinceLastConnCheck = 0
 
         self.timeframe_marks_ready = False
         self.last_tint = -1
@@ -838,6 +1098,15 @@ class TableWidget(QWidget):
         self.orderID = 3000000
         self.activeOrders = []
         self.pending_orders = {}
+
+        self.connTimeout = 3.
+        self.maxConnTimeout = 600.
+
+        self.last_known_30min_timestamp = -1
+        self.last_known_1h_timestamp = -1
+        self.last_known_day = -1
+        self.last_known_minute = -1
+        self.last_known_trading_day = -1
 
         # c1 = {}
         # c1.contract = Contract()
@@ -866,12 +1135,49 @@ class TableWidget(QWidget):
         self.watchlist = {}
         self.watchlistItems = {}
         self.preset_data = {}
-        self.load_presets()
+        # self.load_presets()
         self.portfolio = {}
         self.loadPortfolio()
         self.dir = os.path.dirname(os.path.abspath(__file__))
-        self.layout = QGridLayout(self)
+        self.layout = QGridLayout()
         self.loadPositions()
+
+        self.TFMARKS30MIN = []
+        for hour in range(4, 20):
+            for half_hour in range(2): self.TFMARKS30MIN.append(hour*100 + half_hour*30)
+
+        self.TFMARKS1H    = [400, 500, 600, 700, 800, 900, 930, 1030, 1130, 1230, 1330, 1430, 1530, 1600, 1700, 1800, 1900]
+
+        self.accountInfo = {
+            'NetLiquidation' : {'name':'Net Liquidation Value', 'value':'N/A'},
+            'BuyingPower' : {'name':'Buying Power', 'value':'N/A'},
+            'DayTradesRemaining' : {'name':'Day Trades Remaining', 'value':'N/A'},
+            'InitMarginReq' : {'name':'Initial Margin Requirements', 'value':'N/A'},
+            'MaintMarginReq' : {'name':'Maintenance Margin Requirements', 'value':'N/A'},
+            'RegTEquity' : {'name':'Reg T Equity', 'value':'N/A'},
+            'RegTMargin' : {'name':'Reg T Margin', 'value':'N/A'},
+            'AvailableFunds' : {'name':'Available Funds', 'value':'N/A'},
+            'CashBalance' : {'name':'Cash Balance', 'value':'N/A'},
+            'EquityWithLoanValue' : {'name':'Equity With Loan', 'value':'N/A'},
+            'ExcessLiquidity' : {'name':'Excess Liquidity', 'value':'N/A'},
+            'FullAvailableFunds' : {'name':'Full Available Funds', 'value':'N/A'},
+            'AccruedCash' : {'name':'Accrued Cash', 'value':'N/A'},
+            'StockMarketValue' : {'name':'Stock Market Value', 'value':'N/A'},
+            'TotalCashBalance' : {'name':'Total Cash Balance', 'value':'N/A'},
+            'UnrealizedPnL' : {'name':'Unrealized PnL', 'value':'N/A'},
+            'Cushion' : {'name':'Cusion', 'value':'N/A'},
+            'AccountCode' : {'name':'Account Code', 'value':'N/A'}
+        }
+
+        self.accountInfoList = list(self.accountInfo.keys())
+
+        self.accPositions = {}
+        self.POS_TEMPLATE = {'exchange' : '', 'position' : .0, 'mktPrice' : .0, 'VWAP' : .0, 'mktValue' : .0, 'unrealizedPnL' : .0, 'realizedPnL' : .0, 'account' : ''}
+
+        self.orders = {}
+        self.ORDER_PRESET = {'symbol': '', 'exchange':'', 'action':'', 'type':'', 'qty':'', 'limit':'', 
+                             'stop':'', 'status':'', 'filled':'', 'remaining':'', 'avgfillprice':'',
+                             'orderId':'', 'permId':'', 'TIF':'', 'secType':'', 'tradeReported':False}
 
         if self.show_gauge_panel:
             self.gaugePanel = QWidget()
@@ -901,18 +1207,28 @@ class TableWidget(QWidget):
         self.tab1 = QWidget()
         self.tab2 = QWidget()
         self.tab3 = QWidget()
-        self.posTab = QWidget()
+        self.accountTab = QWidget()
+        self.positionsTab = QWidget()
+        self.ordersTab = QWidget()
+        self.equityTab = QWidget()
+        self.algoTab = QWidget()
+        # self.posTab = QWidget()
         self.tradesTab = QWidget()
-        self.trades = []
+        self.trades_old = []
         self.tabs.resize(300,200)
 
 
 
         # Add tabs
         self.tabs.addTab(self.tab1,"Dashboard")
-        self.tabs.addTab(self.posTab, "Positions")
+        self.tabs.addTab(self.positionsTab, "Positions")
+        self.tabs.addTab(self.ordersTab, "Orders")
+        self.tabs.addTab(self.accountTab,"Account")
+        self.tabs.addTab(self.algoTab,"Algorithms")
+        # self.tabs.addTab(self.posTab, "PositionsOld")
         self.tabs.addTab(self.tradesTab, "Trades")
-        self.tabs.addTab(self.tab2,"Pending Liquidations")
+        self.tabs.addTab(self.equityTab, "Equity")
+        # self.tabs.addTab(self.tab2,"Pending Liquidations")
         self.tabs.addTab(self.tab3,"Log")
 
         # Create first tab
@@ -1001,7 +1317,7 @@ class TableWidget(QWidget):
         # self.clock.setFixedHeight(28)
         self.clockLayout = QHBoxLayout()
         self.clockLayout.setAlignment(Qt.AlignTop)
-        self.clockLayout.setContentsMargins(0, 15, 0, 0)
+        self.clockLayout.setContentsMargins(0, 0, 0, 0)
         self.clockTxt = QLabel('')
         self.clockTime = QLabel('')
         self.clockLayout.addWidget(self.clockTxt)
@@ -1010,7 +1326,7 @@ class TableWidget(QWidget):
 
         self.mktStatusWidget = QWidget()
         self.mktStatusTable = QGridLayout()
-        self.mktStatusTable.setContentsMargins(0, 5, 0, 0)
+        self.mktStatusTable.setContentsMargins(0, 0, 0, 0)
         # self.mktStatusWidget.setFixedHeight(28)
         self.mktStatusLayout = QHBoxLayout()
         self.mktStatusLayout.setAlignment(Qt.AlignTop|Qt.AlignRight)
@@ -1031,11 +1347,11 @@ class TableWidget(QWidget):
 
 
 
-        self.tab1.layout.addLayout(self.buttonPanel, 0, 3, alignment=Qt.AlignRight)
+        # self.tab1.layout.addLayout(self.buttonPanel, 0, 3, alignment=Qt.AlignRight)
         self.tab1.layout.addWidget(self.symbolSerachText, 0, 0)
         self.tab1.layout.addWidget(self.searchButton, 0, 1)
-        self.tab1.layout.addWidget(self.clock, 1, 3, 1, 1, alignment=Qt.AlignRight|Qt.AlignTop)
-        self.tab1.layout.addWidget(self.mktStatusWidget, 2, 3, 1, 1, alignment=Qt.AlignRight|Qt.AlignTop)
+        self.tab1.layout.addWidget(self.clock, 0, 3, 1, 1, alignment=Qt.AlignRight|Qt.AlignVCenter)
+        self.tab1.layout.addWidget(self.mktStatusWidget, 1, 3, 1, 1, alignment=Qt.AlignRight|Qt.AlignVCenter)
         if self.show_gauge_panel:
             self.tab1.layout.addWidget(self.gaugePanel, 3, 0, 1, 4, alignment=Qt.AlignCenter|Qt.AlignTop)
         self.tab1.layout.addWidget(self.watchlistWidget, 4, 0, 20, 4, alignment=Qt.AlignTop|Qt.AlignCenter)
@@ -1050,7 +1366,8 @@ class TableWidget(QWidget):
         # self.tab1.layout.addLayout(self.stock, 1, 0, alignment=Qt.AlignLeft)
 
 
-        self.tab1.setLayout(self.tab1.layout)
+        # self.tab1.setLayout(self.tab1.layout)
+        
 
         # Second tab ###########################################################
         self.createTable()
@@ -1058,8 +1375,97 @@ class TableWidget(QWidget):
         self.tab2.layout.addWidget(self.tableWidget)
         self.tab2.setLayout(self.tab2.layout)
 
-        # Positions ############################################################
-        self.posTab.wrapper = QVBoxLayout(self)
+        # Account ##############################################################
+        self.accountTab.wrapper = QVBoxLayout()
+        self.accountTab.setLayout(self.accountTab.wrapper)
+        self.accountTable = QTableWidget()
+        self.accountTable.cellChanged.connect(self.accountCellChanged, Qt.DirectConnection)
+        self.accountTable.setColumnCount(2)
+        self.accountTable.setRowCount(len(self.accountInfoList))
+        self.accountTab.wrapper.addWidget(self.accountTable)
+
+        self.accountTable.horizontalHeader().setVisible(False)
+        self.accountTable.verticalHeader().setVisible(False)
+        self.accountTable.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.accountTable.setShowGrid(False)
+
+        header = self.accountTable.horizontalHeader()       
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+
+        row = 0
+        for key in self.accountInfoList:
+            w_item = QTableWidgetItem( str(self.accountInfo[key]['name']) )
+            w_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            self.accountTable.setItem(row, 0, w_item)
+            if row%2 == 1: w_item.setBackground(QColor(74, 105, 135))
+            w_item = QTableWidgetItem( str(self.accountInfo[key]['value']) )
+            w_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            if row%2 == 1: w_item.setBackground(QColor(74, 105, 135))
+            self.accountTable.setItem(row, 1, w_item)
+            row += 1
+
+        self.accountData = {
+            'Reg T Margin': -1,
+            'NLV': -1
+        }
+
+        # Positions ###########################################################
+        self.positionsTab.wrapper = QVBoxLayout()
+        self.positionsTab.setLayout(self.positionsTab.wrapper)
+        self.positionsTable = QTableWidget()
+        self.positionsTable.cellChanged.connect(self.positionsCellChanged, Qt.DirectConnection)
+        self.positionsTable.setColumnCount(9)
+        self.positionsTable.setRowCount(0)
+        self.positionsTab.wrapper.addWidget(self.positionsTable)
+
+        self.positionsTable.verticalHeader().setVisible(False)
+        self.positionsTable.setEditTriggers(QAbstractItemView.NoEditTriggers)
+
+        self.positionsTable.setHorizontalHeaderLabels(['Instrument', 'Exchange', 'Position', 'Mkt Price', 'VWAP', 'Mkt Value', 'Unrealized PnL', 'Realized PnL', 'Account ID'])
+        header = self.positionsTable.horizontalHeader()
+        self.symbolFont = QFont()
+        self.symbolFont.setBold(True)
+
+        for col in range(9): header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+
+        
+        # Orders ###############################################################
+        self.ordersTab.wrapper = QVBoxLayout()
+        self.ordersTab.setLayout(self.ordersTab.wrapper)
+        self.ordersTable = QTableWidget()
+        self.ordersTable.cellChanged.connect(self.ordersCellChanged, Qt.DirectConnection)
+        self.ordersTable.setColumnCount(14)
+        self.ordersTable.setRowCount(0)
+        self.ordersTab.wrapper.addWidget(self.ordersTable)
+
+        self.ordersTable.verticalHeader().setVisible(False)
+        self.ordersTable.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.ordersTable.setHorizontalHeaderLabels(['Symbol', 'Exchange', 'Action', 'Order Type', 'Qty', 'Limit Price', 'Stop Price', 'Status', 'Filled', 'Remaining', 'Avg Fill Price', 'TIF', 'Order ID', 'Perm ID'])
+        header = self.ordersTable.horizontalHeader()
+        for col in range(14): header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+
+        # Algorithms #############################################################
+        self.algoTab.wrapper = QVBoxLayout()
+        self.algoTab.setLayout(self.algoTab.wrapper)
+        self.algoTable = QTableWidget()
+        self.algoTable.cellChanged.connect(self.ordersCellChanged, Qt.DirectConnection)
+        self.algoTable.setColumnCount(11)
+        self.algoTable.setRowCount(0)
+        self.algoTab.wrapper.addWidget(self.algoTable)
+
+        self.algoTable.verticalHeader().setVisible(False)
+        self.algoTable.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.algoTable.setHorizontalHeaderLabels(['Symbol', 'Algorithm', 'Position', 'VWAP', 'TP Active', 'TP Price', 'TP Qty', 'SL Active', 'SL Price', 'SL Qty', 'State'])
+        header = self.algoTable.horizontalHeader()
+        for col in range(11): header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+
+        self.updateAlgoTable()
+       
+
+        # Positions (old) ######################################################
+        """
+        self.posTab.wrapper = QVBoxLayout()
         self.posTab.setLayout(self.posTab.wrapper)
         self.posTable = QTableWidget()
         self.posTable.setColumnCount(len(self.preset_data.keys()))
@@ -1084,20 +1490,62 @@ class TableWidget(QWidget):
                 if value > 0:
                     self.posTable.item(symIX, algoIX).setBackground(QColor(0,230,118))
                     self.posTable.item(symIX, algoIX).setForeground(QBrush(QColor(100, 100, 100)))
+        """
 
         # Trades ###############################################################
-        self.tradesTab.wrapper = QVBoxLayout(self)
+        self.tradesTab.wrapper = QVBoxLayout()
         self.tradesTab.setLayout(self.tradesTab.wrapper)
+        self.tradesTable_old = QTableWidget()
+        self.tradesTable_old.setColumnCount(6)
+        self.tradesTable_old.setRowCount(0)
+        self.tradesTable_old.setColumnWidth(0, 320)
+        self.tradesTable_old.verticalHeader().setVisible(False)
+        self.tradesTable_old.setHorizontalHeaderLabels( ['Date', 'Time', 'Symbol', 'Action', 'Qty', 'Fill'] )
+
         self.tradesTable = QTableWidget()
         self.tradesTable.setColumnCount(6)
         self.tradesTable.setRowCount(0)
-        self.tradesTable.setColumnWidth(0, 320)
-        self.tradesTable.verticalHeader().setVisible(False)
-        self.tradesTable.setHorizontalHeaderLabels( ['Time', 'Symbol', 'Algorithm', 'Action', 'Qty', 'VWAP'] )
         self.tradesTab.wrapper.addWidget(self.tradesTable)
 
+        self.tradesTable.verticalHeader().setVisible(False)
+        self.tradesTable.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tradesTable.setHorizontalHeaderLabels(['Symbol', 'Date', 'Time', 'Action', 'Qty', 'Fill'])
+        header = self.tradesTable.horizontalHeader()
+        for col in range(6): header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+
+        self.trades = []
+
+        # Equity ###############################################################
+        self.equityTab.wrapper = QVBoxLayout()
+        self.equityTab.setLayout(self.equityTab.wrapper)
+        self.equityTable = QTableWidget()
+        self.equityTable.setColumnCount(6)
+        self.equityTable.setRowCount(0)
+        self.equityTab.wrapper.addWidget(self.equityTable)
+
+        self.equityTable.verticalHeader().setVisible(False)
+        self.equityTable.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.equityTable.setHorizontalHeaderLabels(['Symbol', 'Date', 'Time', 'Mkt Price', 'Qty', 'Realized PnL'])
+        header = self.equityTable.horizontalHeader()
+        for col in range(6): header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+
+        self.equity = []
+        self.cumEquity = [.0]
+
+        self.initiate_db_connection()
+
+        self.equityPlot = EquityPlot()
+
+        """
+        self.qChart = QuickChart()
+        self.qChart.requestSymbols.connect(self.transmitSymbolsToQChart, Qt.DirectConnection)
+        self.symbols_to_qchart.connect(self.qChart.getSymbols, Qt.DirectConnection)
+        self.qChart.requestData.connect(self.qChartRequestedData, Qt.DirectConnection)
+        self.sendDataToQChart.connect(self.qChart.dataReceived, Qt.DirectConnection)
+        """
+
         # Log tab ##############################################################
-        self.tab3.wrapper = QVBoxLayout(self)
+        self.tab3.wrapper = QVBoxLayout()
         self.tab3.setLayout(self.tab3.wrapper)
 
         self.logTable = QTableWidget()
@@ -1123,11 +1571,57 @@ class TableWidget(QWidget):
         self.setLayout(self.layout)
 
 
-        self.presets = Presets()
-        self.presets.send_presets_to_app.connect(self.new_presets_received, Qt.DirectConnection)
+        # self.presets = Presets()
+        # self.presets.send_presets_to_app.connect(self.new_presets_received, Qt.DirectConnection)
+
+        self.orderCancelWindow = CancelOrder()
+        self.orderCancelWindow.cancel_order.connect(self.cancel_order, Qt.DirectConnection)
+
+        self.submitOrderWindow = SubmitOrder()
+
+        # API Main Thread #################################################
+        """
+        self.apiThread = QThread()
+        self.worker = API()
+
+        self.worker.signalEmitted.connect(self.readWorkerSignal, Qt.DirectConnection)
+        self.worker.connected.connect(self.worker_reconnected, Qt.DirectConnection)
+        # self.worker.reconnected.connect(self.worker_reconnected, Qt.DirectConnection)
+        self.worker.emit_error.connect(self.error_received, Qt.DirectConnection)
+        self.worker.log.connect(self.worker_log_msg, Qt.DirectConnection)
+        self.worker.symbolInfo.connect(self.symbolInfoReceived, Qt.DirectConnection)
+        self.worker.transmit_order_status.connect(self.order_status_update, Qt.DirectConnection)
+        self.worker.transmit_commission.connect(self.commission_update, Qt.DirectConnection)
+        self.worker.transmit_valid_id.connect(self.receive_valid_id, Qt.DirectConnection)
+        self.worker.transmit_account_info.connect(self.account_info_update, Qt.DirectConnection)
+        self.worker.transmit_position.connect(self.position_update, Qt.DirectConnection)
+        self.worker.transmit_open_order.connect(self.open_order_received, Qt.DirectConnection)
+        self.worker.tick.connect(self.tick, Qt.DirectConnection)
+        
+        self.transmit_order.connect(self.worker.placeOrder, Qt.DirectConnection)
+        self.symInfoRequested.connect(self.worker.sym_search, Qt.DirectConnection)
+        self.tell_worker_to_cancel_order.connect(self.worker.cancel_order, Qt.DirectConnection)
+
+        self.submitOrderWindow.amIConnected.connect(self.worker.connectionStatusOrder, Qt.DirectConnection)
+        self.worker.amIConnectedOrder.connect(self.submitOrderWindow.updateConnectionStatus, Qt.DirectConnection)
+        self.submitOrderWindow.lookupRequest.connect(self.worker.sym_search, Qt.DirectConnection)
+        self.worker.symInfoToOrder.connect(self.submitOrderWindow.lookupResultsReceived, Qt.DirectConnection)
+        self.submitOrderWindow.submit_order.connect(self.worker.submit_order, Qt.DirectConnection)        
+
+        self.worker.moveToThread(self.apiThread)
+
+        self.worker.finished.connect(self.apiThread.quit)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.apiThread.finished.connect(self.apiThread.deleteLater)
+
+        self.worker.adjust_connection_settings(self.settings['connection']['port'], self.settings['connection']['clientId'], self.settings['account']['accountId'])
+        self.apiThread.start()
+        """
+        ###################################################################
 
 
         # Run Dash
+        """
         self.dashThread = QThread()
         self.dashWorker = DashWorker()
         self.dashWorker.moveToThread(self.dashThread)
@@ -1137,6 +1631,7 @@ class TableWidget(QWidget):
         self.dashWorker.finished.connect(self.dashWorker.deleteLater)
         self.dashThread.finished.connect(self.dashThread.deleteLater)
         self.dashThread.start()
+        """
 
         # self.dashThread.finished.connect(
         #     lambda: self.enable_connect_button()
@@ -1151,7 +1646,10 @@ class TableWidget(QWidget):
         self.w.show()
         """
 
-        self.chartWindow = Chart()
+        # self.chartWindow = Chart()
+        # Essential chart funactionality commented with single line comments,
+        # additional functionality (dash) with multi-line comments
+        """
         self.dashWorker.requestWindowSize.connect(self.chartWindow.get_browser_size, Qt.DirectConnection)
         self.chartWindow.transmitWindowSize.connect(self.dashWorker.update_window_size, Qt.DirectConnection)
 
@@ -1161,13 +1659,180 @@ class TableWidget(QWidget):
         self.chartWindow.tellDashToChangeState.connect(self.dashWorker.stateChange, Qt.DirectConnection)
         self.chartWindow.sendDataToDash.connect(self.dashWorker.newDataReceived, Qt.DirectConnection)
         self.dashWorker.ready.connect(self.startupRoutine, Qt.DirectConnection)
+        """
 
         self.currentTimeISAheadOfEDT = False
         self.timeDIfferenceWithEDT = 0
         self.timeMultiplier = 1
         self.timeInfoReady = False
 
+        self.startupRoutine()
+        self.establish_connection()
 
+    def updateAlgoTable(self):
+        self.algoTable.setRowCount(0)
+        row = 0
+        for symbol in self.positions.keys():
+            for strategy in self.positions[symbol].keys():
+                s = self.positions[symbol][strategy]
+                self.algoTable.insertRow(row)
+                self.algoTable.setItem(row, 0, QTableWidgetItem( symbol ))
+                self.algoTable.setItem(row, 1, QTableWidgetItem( strategy ))
+                self.algoTable.setItem(row, 2, QTableWidgetItem( str( s['position'] ) ))
+                self.algoTable.setItem(row, 3, QTableWidgetItem( str( s['vwap'] ) ))
+                self.algoTable.setItem(row, 4, QTableWidgetItem( 'No' if not s['tpActive'] else 'Active' ))
+                self.algoTable.setItem(row, 5, QTableWidgetItem( str( s['tpPrice'] ) ))
+                self.algoTable.setItem(row, 6, QTableWidgetItem( str( s['tpQty'] ) ))
+                self.algoTable.setItem(row, 7, QTableWidgetItem( 'No' if not s['slActive'] else 'Active' ))
+                self.algoTable.setItem(row, 8, QTableWidgetItem( str( s['slPrice'] ) ))
+                self.algoTable.setItem(row, 9, QTableWidgetItem( str( s['slQty'] ) ))
+                self.algoTable.setItem(row, 10, QTableWidgetItem( s['state'] ))
+
+
+    def ordersCellChanged(self, row, column):
+        if self.debugMode == 1: print('Orders. Changed row {} column {}'.format(row, column))
+
+    def positionsCellChanged(self, row, column):
+        if self.debugMode == 1: print('Positions. Changed row {} column {}'.format(row, column))
+
+    def accountCellChanged(self, row, column):
+        if self.debugMode == 1: print('Account. Changed row {} column {}'.format(row, column))
+
+    def transmitSymbolsToQChart(self, code):
+        symbols = []
+        for key in list(self.watchlist.keys()):
+            symbols.append(self.watchlist[key].contract.symbol)
+        self.symbols_to_qchart.emit(symbols)
+
+    def preprocessDataForQChart(self, data):
+        d = []
+        for n in range(len(data['close'])):
+            d.append(
+                (n,
+                 data['open'][n],
+                 data['high'][n],
+                 data['low'][n],
+                 data['close'][n])
+            )
+        return d
+
+    def qChartRequestedData(self, symbol, timeframe):
+        if symbol in self.downloader.data.keys():
+            data = self.preprocessDataForQChart(self.downloader.data[symbol])
+            self.sendDataToQChart.emit(data)
+
+
+    def initiate_db_connection(self):
+        DB_DIR = '{}/{}'.format( os.path.dirname(os.path.abspath(__file__)), 'db' )
+        if not os.path.exists(DB_DIR): os.makedirs(DB_DIR)
+        self.DB_PATH = ''.join([DB_DIR, '/', 'history.db'])
+
+        con = sqlite3.connect(self.DB_PATH)
+        cur = con.cursor()
+
+        query            = """ CREATE TABLE IF NOT EXISTS trades (
+                                        id integer PRIMARY KEY,
+                                        ticker text NOT NULL,
+                                        sectype text NOT NULL,
+                                        datetime text NOT NULL,
+                                        action text NOT NULL,
+                                        qty real,
+                                        fill real,
+                                        pnl text
+                                    ); """
+
+        cur.execute(query)
+
+        query            = """ CREATE TABLE IF NOT EXISTS equity (
+                                        id integer PRIMARY KEY,
+                                        ticker text NOT NULL,
+                                        datetime text NOT NULL,
+                                        mktprice real,
+                                        qty real,
+                                        pnl real
+                                    ); """
+        
+        cur.execute(query)
+
+        cur.execute("SELECT * FROM trades")
+        rows = cur.fetchall()
+        for row in rows: self.trades.append(deepcopy(row))
+
+        row = 0  # self.tradesTable.rowCount()
+        for trade in self.trades:
+            self.tradesTable.insertRow(row)
+            self.tradesTable.setItem(row, 0, QTableWidgetItem(trade[1]))
+            self.tradesTable.item(row, 0).setForeground(QColor(243, 156, 18))
+            self.tradesTable.item(row, 0).setFont(self.symbolFont)
+            self.tradesTable.setItem(row, 1, QTableWidgetItem(trade[3][:10]))
+            self.tradesTable.setItem(row, 2, QTableWidgetItem(trade[3][11:]))
+            self.tradesTable.setItem(row, 3, QTableWidgetItem(trade[4]))
+            if trade[4] == 'BUY':
+                self.tradesTable.item(row, 3).setForeground(QColor(0, 230, 118))
+            else: self.tradesTable.item(row, 3).setForeground(QColor(255, 82, 82))
+            # self.tradesTable.item(row, 3).setFont(self.symbolFont)
+            self.tradesTable.setItem(row, 4, QTableWidgetItem(str(trade[5])))
+            self.tradesTable.setItem(row, 5, QTableWidgetItem(str(trade[6])))
+
+        cur.execute("SELECT * FROM equity")
+        rows = cur.fetchall()
+        equityItems = []
+        for row in rows: equityItems.append(deepcopy(row))
+        cur.close()
+
+        row = 0
+        for item in equityItems:
+            self.equityTable.insertRow(row)
+            self.equityTable.setItem(row, 0, QTableWidgetItem(item[1]))
+            self.equityTable.item(row, 0).setForeground(QColor(243, 156, 18))
+            self.equityTable.item(row, 0).setFont(self.symbolFont)
+            self.equityTable.setItem(row, 1, QTableWidgetItem(item[2][:10]))
+            self.equityTable.setItem(row, 2, QTableWidgetItem(item[2][11:]))
+            self.equityTable.setItem(row, 3, QTableWidgetItem(str(item[3])))
+            self.equityTable.setItem(row, 4, QTableWidgetItem(str(item[4])))
+            self.equityTable.setItem(row, 5, QTableWidgetItem( ''.join(['$', str(round(item[5], 2))]) ))
+            c = QColor(0, 230, 118) if float(item[5]) >= .0 else QColor(255, 82, 82)
+            self.equityTable.item(row, 5).setForeground(c)
+            # self.equityTable.item(row, 5).setFont(self.symbolFont)
+            self.equity.append(float(item[5]))
+            self.cumEquity.append(self.cumEquity[-1]+float(item[5]))
+
+
+    def submit_market_order(self, symbol, qty, direction='BUY'):
+        _contract = None
+        for reqId in self.watchlist.keys():
+            if self.watchlist[reqId].contract.symbol.upper() == symbol.upper():
+                _contract = self.watchlist[reqId].contract
+                break
+        if _contract == None:
+            self.log('error', 'Could not place order {} {} {} @MKT. Contract is not in the watchlist.'.format(
+                direction, qty, symbol
+            ))
+            return
+        if direction not in ['BUY', 'SELL']:
+            self.log('error', 'Could not place order {} {} {} @MKT. Unknown action {}.'.format(
+                direction, qty, symbol, direction
+            ))
+            return
+        if qty <= 0:
+            self.log('error', 'Could not place order {} {} {} @MKT. Invalid Qty.'.format(
+                direction, qty, symbol
+            ))
+            return
+
+        order = Order()
+        order.action = direction
+        order.totalQuantity = qty
+        order.orderType, order.transmit, order.eTradeOnly, order.firmQuoteOnly = 'MKT', True, False, False
+        contract = Contract()
+        contract.symbol, contract.secType, contract.exchange, contract.currency = symbol, 'STK', 'SMART', 'USD'
+        contract.primaryExchange = _contract.primaryExchange
+
+        self.worker.submit_order(order, contract)
+
+
+    def cancel_order(self, orderId):
+        self.tell_worker_to_cancel_order.emit(orderId)
 
     def data_status_update(self, msg):
         self.update_data_status.emit(msg)
@@ -1178,22 +1843,19 @@ class TableWidget(QWidget):
             with open(filename) as f:
                 self.settings = json.load(f)
         else:
-            self.settings = {
-                "strategy": {"timeframe": 5, "onlyRTH_history": True, "onlyRTH_trading": True, "trade_all": True, "pos_size": 50},
-                "connection": {"port": 4002, "clientId": 1},
-                "server": {"address": "000.000.000.000", "key": "", "role": "Client"},
-                "common": {"checkUpdates": True, "risk": 300},
-                "margin": {"intraday": 50, "overnight": 25}}
+            self.settings = {"strategy": {"onlyRTH_history": True, "onlyRTH_trading": True, "pos_size": 100, "flatten_eod": False, "flatten_eod_seconds": 300}, "connection": {"port": 4002, "clientId": 0}, "server": {"address": "000.000.000.000", "key": "", "role": "Client"}, "common": {"checkUpdates": True, "risk": 300, "animation": True}, "margin": {"intraday": 19, "overnight": 29}, "account": {"accountId": "DU1869966", "delayed_quotes": True}}
 
-
+    """
     def load_presets(self):
         self.preset_data = {}
         filename = '{}{}{}'.format( os.path.dirname(os.path.abspath(__file__)), '/config/', 'presets.json' )
         if os.path.isfile(filename):
             with open(filename) as f:
                 self.preset_data = json.load(f)
+    """
 
 
+    """
     def new_presets_received(self, presets):
         self.preset_data = deepcopy(presets)
         for symbol, settings in self.portfolio.items():
@@ -1205,6 +1867,7 @@ class TableWidget(QWidget):
                 if algo not in self.portfolio[symbol]['permissions']:
                     self.portfolio[symbol]['permissions'][algo] = self.settings['strategy']['trade_all']
         self.savePortfolio()
+    """
 
 
     def log(self, level, msg):
@@ -1215,9 +1878,10 @@ class TableWidget(QWidget):
         self.logTable.insertRow(rowPosition)
         self.logTable.setItem(rowPosition, 0, QTableWidgetItem(fullMsg))
         fileName = self.logInfo if level == 'info' else self.logError
-        if not self.debug and self.logActive:
+        if self.logActive:
             with open(fileName, 'a+') as f: f.write(fullMsg)
 
+    """
     def update_position_table(self):
         watchlist_keys = []
         for key in list(self.watchlist.keys()):
@@ -1230,6 +1894,7 @@ class TableWidget(QWidget):
                 if value > 0:
                     self.posTable.item(symIX, algoIX).setBackground(QColor(0,230,118))
                     self.posTable.item(symIX, algoIX).setForeground(QBrush(QColor(100, 100, 100)))
+    """
 
 
     def subscribe(self):
@@ -1264,15 +1929,8 @@ class TableWidget(QWidget):
 
         self.downloadThread.start()
 
-        self.downloadThread.finished.connect(
-            lambda: self.enable_connect_button()
-        )
-        self.downloadThread.finished.connect(
-            lambda: self.connectionLabel.setText("Status: disconnected")
-        )
-
         self.downloader.receive_watchlist(self.watchlist)
-        self.downloader.receive_datapoint_requirement(self.MIN_DATAPOINTS_REQUIRED, int(self.settings['strategy']['hist_excess']))
+        self.downloader.receive_datapoint_requirement(self.MIN_DATAPOINTS_REQUIRED, 0)
         self.downloader.receive_settings(self.settings)
         # self.downloader.main()
 
@@ -1337,6 +1995,11 @@ class TableWidget(QWidget):
         self.timeInfoReady = True
         self.status_message.emit('')
 
+        t = datetime.now() + self.timeMultiplier * timedelta(hours=self.timeDIfferenceWithEDT)
+        self.tint = t.hour*100 + t.minute
+        self.mint = t.minute
+        self.time = t
+
 
 
     def readHolidaysFile(self):
@@ -1366,7 +2029,7 @@ class TableWidget(QWidget):
         title.setAlignment(Qt.AlignTop|Qt.AlignLeft)
         title.setContentsMargins(0, 0, 0, 0)
         title.setSpacing(0)
-        for column in ['Symbol', 'Exchange', 'Prev. Close', 'Change', 'Bid', 'Last', 'Ask', 'Position', 'Margin', 'Execution', 'Auction', 'Session', 'History', '']:
+        for column in ['Symbol', 'Exchange', 'Prev. Close', 'Change', 'Bid', 'Last', 'Ask', 'Position', 'Value', 'Execution', 'Auction', 'Session', 'History', '']:
             w = QLabel(column)
             w.setFixedWidth(80)
             w.setStyleSheet("QLabel{color:#cccccc}")
@@ -1380,13 +2043,14 @@ class TableWidget(QWidget):
         line.setStyleSheet("QWidget{background-color:#aaaaaa; text-align: left}")
         self.watchlistLayout.addWidget(line)
         for reqId in self.watchlist:
-            item = WatchlistItem(reqId, self.watchlist[reqId].contract, self.get_total_positions(reqId))
+            item = WatchlistItem(reqId, self.watchlist[reqId].contract, 0, animated=self.settings['common']['animation'])
             self.watchlistLayout.addWidget(item, alignment=Qt.AlignTop)
             self.watchlistItems[reqId] = item
         if len(self.watchlist) == 0:
             self.noItemsInWatchlist()
         return
 
+    """
     def export_trades(self):
         options = QFileDialog.Options()
         options |= QFileDialog.DontUseNativeDialog
@@ -1395,16 +2059,18 @@ class TableWidget(QWidget):
         if fileName:
             header = ['Time', 'Symbol', 'Algorithm', 'Action', 'Qty', 'VWAP']
             data = []
-            for i in range(self.trades):
+            for i in range(self.trades_old):
                 d = []
-                for j in range(len(self.trades[i])):
-                    d.append(str(self.trades[i][j]))
+                for j in range(len(self.trades_old[i])):
+                    d.append(str(self.trades_old[i][j]))
                 data.append(d)
             with open(fileName, 'w', encoding='UTF8', newline='') as f:
                 writer = csv.writer(f)
                 writer.writerow(header)
                 writer.writerows(data)
+    """
 
+    """
     def get_total_positions(self, reqId):
         symbol = self.watchlist[reqId].contract.symbol
         total_positions = 0
@@ -1412,6 +2078,7 @@ class TableWidget(QWidget):
             total_positions += int(position)
 
         return total_positions
+    """
 
     def watchlistEmptyWidget(self):
         noItemW = QWidget()
@@ -1441,7 +2108,7 @@ class TableWidget(QWidget):
                 'secType' : c.secType,
                 'conId' : c.conId
             }
-        return json.dumps(d)
+        return json.dumps(d, indent=4)
 
     def watchlistPath(self):
         return '{}/{}/{}'.format( os.path.dirname(os.path.abspath(__file__)), 'config', 'watchlist.json' )
@@ -1455,12 +2122,13 @@ class TableWidget(QWidget):
     def savePortfolio(self):
         fileName = self.config_path + '/portfolio.json'
         with open(fileName, 'w') as f:
-            f.write( json.dumps(self.portfolio) )
+            f.write( json.dumps(self.portfolio, indent=4) )
 
     def savePositions(self):
         fileName = self.config_path + '/positions.json'
         with open(fileName, 'w') as f:
-            f.write( json.dumps(self.positions) )
+            f.write( json.dumps(self.positions, indent=4) )
+        self.updateAlgoTable()
 
 
     def loadWatchlist(self):
@@ -1493,9 +2161,18 @@ class TableWidget(QWidget):
             with open(filename) as f:
                 self.positions = json.load(f)
 
-    def update_portfolio(self, portfolio):
+    def update_portfolio(self, portfolio, symbol):
         self.portfolio = deepcopy(portfolio)
+        permissions_changed = False
+        for symbol, settings in self.portfolio.items():
+            for setting, value in settings['permissions'].items():
+                if type(value) == bool and value == True and self.positions[symbol][setting]['state'] == 'deactivated':
+                    self.positions[symbol][setting] = deepcopy(STRATEGY_INFO)
+                    permissions_changed = True
         self.savePortfolio()
+        if permissions_changed: self.savePositions()
+        self.adjust_execution_label(symbol)
+
 
     def update_portfolio_settings(self, symbol):
         exchange = ''
@@ -1506,20 +2183,28 @@ class TableWidget(QWidget):
         self.portfolio_settings_window = PortfolioItemSettings(symbol, exchange, self.portfolio)
         self.portfolio_settings_window.save_settings.connect(self.update_portfolio, Qt.DirectConnection)
 
-    def addToWatchlist(self, contractDescription, startup = False):
+    def requestDataAndSubscribe(self, contract):
+        self.histReqId += 1
+        if contract.symbol in self.data.keys(): del self.data[contract.symbol]
+        self.worker.reqHistDataOneSymbol(self.histReqId, contract, self.settings['strategy']['onlyRTH_history'])
+
+    def new_portfolio_item(self):
+        return deepcopy(DEFAULT_PORTFOLIO_ENTRY)
+
+    def addToWatchlistFromSearch(self, contractDescription):
+        self.addToWatchlist(contractDescription, manual=True)
+
+    def addToWatchlist(self, contractDescription, startup = False, manual=False):
         if len(self.watchlist) == 0: self.noitem[0].deleteLater()
         self.streamingDataReqId += 1
         self.watchlist[self.streamingDataReqId] = contractDescription
-        if self.isConnected and not startup:
+        if self.isConnected and not startup and not manual:
             self.worker.subscribeToStreamingData(self.streamingDataReqId, contractDescription)
         if not startup and contractDescription.contract.symbol not in list(self.positions.keys()):
-            entry = {}
-            for presetName in list(self.preset_data.keys()):
-                entry[presetName] = 0
-            self.positions[contractDescription.contract.symbol] = {'positions': entry}
+            self.positions[contractDescription.contract.symbol] = deepcopy(STRATEGY_TEMPLATE)
             self.savePositions()
         # self.refreshWatchlistLayout()
-        item = WatchlistItem(self.streamingDataReqId, contractDescription.contract, self.get_total_positions(self.streamingDataReqId))
+        item = WatchlistItem(self.streamingDataReqId, contractDescription.contract, 0, animated=self.settings['common']['animation'])
         item.remove.connect(self.removeFromWatchlist, Qt.DirectConnection)
         item.requestMarketState.connect(self.getMktState, Qt.DirectConnection)
         item.update_settings.connect(self.update_portfolio_settings, Qt.DirectConnection)
@@ -1530,18 +2215,21 @@ class TableWidget(QWidget):
         if not startup:
             self.saveWatchlist()
 
-            portfolio_item = {}
-            for algo, _ in self.preset_data.items():
-                portfolio_item[algo] = self.settings['strategy']['trade_all']
+            portfolio_item = self.new_portfolio_item()
+            
             self.portfolio[contractDescription.contract.symbol.upper()] = {}
-            self.portfolio[contractDescription.contract.symbol.upper()]['permissions'] = portfolio_item
+            self.portfolio[contractDescription.contract.symbol.upper()]['permissions'] = deepcopy(portfolio_item)
             self.portfolio[contractDescription.contract.symbol.upper()]['pos_size'] = int(self.settings['strategy']['pos_size'])
             self.savePortfolio()
+
+            item._history.setText('Loading...')
+            item._history.setStyleSheet("QLabel{color:#aaaaaa; font-weight: normal;}")
+            self.requestDataAndSubscribe(contractDescription.contract)
 
 
     def removeFromWatchlist(self, reqId):
 
-        if self.isConnected: self.close_all_positions(reqId)
+        # if self.isConnected: self.close_all_positions(reqId)
 
         if reqId in self.watchlist:
             if self.isConnected: self.worker.cancelStreamingData(reqId)
@@ -1560,10 +2248,241 @@ class TableWidget(QWidget):
         if len(self.watchlist) == 0:
             self.noItemsInWatchlist()
 
+    def update_data(self, symbol, price, timeframe):
+        if symbol not in self.data.keys(): return
+        s = self.data[symbol][timeframe]
+        s['high'][-1] = max(s['high'][-1], price)
+        s['low'][-1]  = min(s['low'][-1], price)
+        s['close'][-1] = price
+
+    def flush_data(self, symbol, price, timeframe):
+        if symbol not in self.data.keys(): return
+        s = self.data[symbol][timeframe]
+        s['datetime'].append(self.time)
+        s['open'].append(price)
+        s['high'].append(price)
+        s['low'].append(price)
+        s['close'].append(price)
+        s['volume'].append(0)
+
 
     def tick(self, reqId, tickType, price):
         if reqId in self.watchlistItems:
             self.watchlistItems[reqId]._update(tickType, price)
+
+        if tickType != 4 or reqId not in self.watchlistItems.keys(): return
+
+        symbol = self.watchlistItems[reqId].symbol
+
+        # s = self.data[symbol]['30min']
+        # print('{} Date {} Open {} High {} Low {} Close {}'.format(
+        #     symbol,
+        #     s['datetime'][-1],
+        #     s['open'][-1],
+        #     s['high'][-1],
+        #     s['low'][-1],
+        #     s['close'][-1]
+        # ))
+
+        if self.mint == self.last_known_minute:
+            for timeframe in ['30min', '1h', 'daily']: self.update_data(symbol, price, timeframe)
+        else:
+            self.last_known_minute = self.mint
+            if self.tint in self.TFMARKS30MIN:
+                self.flush_data(symbol, price, '30min')
+                if self.tint in self.TFMARKS1H:
+                    self.flush_data(symbol, price, '1h')
+                else: self.update_data(symbol, price, '1h')
+            else:
+                for timeframe in ['30min', '1h']: self.update_data(symbol, price, timeframe)
+
+            if self.data[symbol]['daily']['datetime'][-1].day != self.time.day:
+                self.flush_data(symbol, price, 'daily')
+                self.data[symbol]['meta']['openingTick'] = True
+            else: 
+                self.update_data(symbol, price, 'daily')
+                self.data[symbol]['meta']['openingTick'] = False
+
+        for strategy in self.positions[symbol].keys():
+            if self.portfolio[symbol]['permissions'][strategy]:
+                stratdata = self.positions[symbol][strategy]
+                if strategy == 'Long Breakout':
+                    # Long Breakout - Initial Entry
+                    activeOrder = stratdata['activeOrderId'] == -1
+                    if stratdata['state'] == 'activated' and not activeOrder:
+                        # Deactivate strategy if day opened with a gap
+                        # or if launched when instrument is already trading above the 
+                        # entry level
+                        if (self.data[symbol]['meta']['openingTick'] or self.data[symbol]['meta']['firstEverTick'] or self.positions[symbol][strategy]['lastPrice'] == -1 ) \
+                            and price > self.portfolio[symbol]['permissions'][strategy + ' Price']:
+                            self.deactivateStrategy(symbol, strategy)
+                            self.log('info', 'Instrument is trading above breakout level. Deactivating strategy {}. Symbol {}'.format(strategy, symbol))
+                        elif price > self.portfolio[symbol]['permissions'][strategy + ' Price']:
+                            risk = price - self.data[symbol]['daily']['low'][-1] + 2 * self.tickSize(price) * SLIPPAGE_IN_TICKS
+                            if risk <= 0:
+                                self.deactivateStrategy(symbol, strategy)
+                                self.log('error', 'Can not buy below day low. Price {} Day Low {} Symbol {}'.format(
+                                    price, self.data[symbol]['daily']['low'][-1], symbol
+                                ))
+                            else:
+                                posSize = self.positionSize(symbol, price, risk, 'BUY')
+                                if posSize <= 0: self.deactivateStrategy(symbol, strategy)
+                                else:
+                                    self.positions[symbol][strategy]['activeOrderId'] = self.worker.validOrderId + 1
+                                    self.positions[symbol][strategy]['slPrice'] = self.data[symbol]['daily']['low'][-1] - self.tickSize(price) * SLIPPAGE_IN_TICKS
+                                    self.submit_market_order(symbol, posSize, direction='BUY')
+                                    self.log('info', 'Submitting MKT order to BUY {} {}'.format(posSize, symbol))
+                                    self.savePositions()
+
+                    if stratdata['state'] == 'initiated' and not activeOrder:
+                        if price < stratdata['slPrice']:
+                            stratdata['activeOrderId'] = self.worker.validOrderId + 1
+                            stratdata['orderInfo'] = 'stoppedOut'
+                            self.submit_market_order(symbol, stratdata['slQty'], direction='SELL')
+                            self.log('info', 'Stopped out. {} {}@{}'.format(stratdata['slQty'], symbol, price))
+                        elif stratdata['tpActive'] and price > stratdata['tpPrice']:
+                            stratdata['activeOrderId'] = self.worker.validOrderId + 1
+                            stratdata['orderInfo'] = 'tpHit'
+                            self.submit_market_order(symbol, stratdata['tpQty'], direction='SELL')
+                            self.log('info', 'Reached target. Selling {} {}@{}'.format(stratdata['tpQty'], symbol, price))
+
+                    if not stratdata['slTrailing'] and price > stratdata['slPrice'] + 2 * (stratdata['vwap'] - stratdata['slPrice']):
+                        stratdata['slTrailing'] = True
+                        stratdata['slPrice'] = self.roundToNearestTick(stratdata['vwap'] + self.tickSize(price), price)
+
+                    if stratdata['slTrailing'] and stratdata['slPrice'] != self.data[symbol]['1h']['low'][-1]:
+                        stratdata['slPrice'] = max(stratdata['slPrice'], self.data[symbol]['1h']['low'][-1])
+
+
+                    if self.positions[symbol][strategy]['lastPrice'] == -1: self.positions[symbol][strategy]['lastPrice'] = price
+
+                elif strategy == 'Short Breakout':
+                    # Short Breakout - Initial Entry
+                    activeOrder = stratdata['activeOrderId'] == -1
+                    if stratdata['state'] == 'activated' and not activeOrder:
+                        # Deactivate strategy if day opened with a gap
+                        # or if launched when instrument is already trading above the 
+                        # entry level
+                        if (self.data[symbol]['meta']['openingTick'] or self.data[symbol]['meta']['firstEverTick'] or self.positions[symbol][strategy]['lastPrice'] == -1 ) \
+                            and price < self.portfolio[symbol]['permissions'][strategy + ' Price']:
+                            self.deactivateStrategy(symbol, strategy)
+                            self.log('info', 'Instrument is trading below breakout level. Deactivating strategy {}. Symbol {}'.format(strategy, symbol))
+                        elif price < self.portfolio[symbol]['permissions'][strategy + ' Price']:
+                            risk = self.data[symbol]['daily']['high'][-1] - price + 2 * self.tickSize(price) * SLIPPAGE_IN_TICKS
+                            if risk <= 0:
+                                self.deactivateStrategy(symbol, strategy)
+                                self.log('error', 'Can not sell above day high. Price {} Day high {} Symbol {}'.format(
+                                    price, self.data[symbol]['daily']['high'][-1], symbol
+                                ))
+                            else:
+                                posSize = self.positionSize(symbol, price, risk, 'SHORT')
+                                if posSize <= 0: self.deactivateStrategy(symbol, strategy)
+                                else:
+                                    self.positions[symbol][strategy]['activeOrderId'] = self.worker.validOrderId + 1
+                                    self.positions[symbol][strategy]['slPrice'] = self.data[symbol]['daily']['high'][-1] + self.tickSize(price) * SLIPPAGE_IN_TICKS
+                                    self.submit_market_order(symbol, posSize, direction='SELL')
+                                    self.log('info', 'Submitting MKT order to SHORT {} {}'.format(posSize, symbol))
+                                    self.savePositions()
+
+                    if stratdata['state'] == 'initiated' and not activeOrder:
+                        if price > stratdata['slPrice']:
+                            stratdata['activeOrderId'] = self.worker.validOrderId + 1
+                            stratdata['orderInfo'] = 'stoppedOut'
+                            self.submit_market_order(symbol, stratdata['slQty'], direction='BUY')
+                            self.log('info', 'Stopped out. {} {}@{}'.format(stratdata['slQty'], symbol, price))
+                        elif stratdata['tpActive'] and price < stratdata['tpPrice']:
+                            stratdata['activeOrderId'] = self.worker.validOrderId + 1
+                            stratdata['orderInfo'] = 'tpHit'
+                            self.submit_market_order(symbol, stratdata['tpQty'], direction='BUY')
+                            self.log('info', 'Reached target. Buying back {} {}@{}'.format(stratdata['tpQty'], symbol, price))
+
+                    if not stratdata['slTrailing'] and price < stratdata['slPrice'] - 2 * (stratdata['slPrice'] - stratdata['vwap']):
+                        stratdata['slTrailing'] = True
+                        stratdata['slPrice'] = self.roundToNearestTick(stratdata['vwap'] - self.tickSize(price), price)
+
+                    if stratdata['slTrailing'] and stratdata['slPrice'] != self.data[symbol]['1h']['high'][-1]:
+                        stratdata['slPrice'] = min(stratdata['slPrice'], self.data[symbol]['1h']['high'][-1])
+
+
+                    if self.positions[symbol][strategy]['lastPrice'] == -1: self.positions[symbol][strategy]['lastPrice'] = price
+
+
+        if self.data[symbol]['meta']['firstEverTick']: self.data[symbol]['meta']['firstEverTick'] = False
+
+
+
+
+        """
+        s = self.data[symbol]['30min']
+        print('Date: {} Open: {} High: {} Low: {} Close: {}'.format(
+            s['datetime'][-1],
+            s['open'][-1],
+            s['high'][-1],
+            s['low'][-1],
+            s['close'][-1]
+        ))
+        """
+
+    def tickSize(self, price):
+        return .01 if price > 1. else .0001
+    
+    def roundToNearestTick(self, value, price):
+        return round(value, int(math.log10(self.tickSize(price)**-1)))
+
+    def positionSize(self, symbol, price, risk, action):
+        if self.accountInfo['AvailableFunds']['value'] == 'N/A':
+            self.log('error', 'Missing account information')
+            return -1
+        availableFunds = float(self.accountInfo['AvailableFunds']['value'])
+
+        posSizeRiskBased = math.floor(self.portfolio[symbol]['pos_size'] / risk)
+
+        maxPosSize = self.maxStockPosition(availableFunds, action, price)
+        posSize = min(posSizeRiskBased, maxPosSize)
+        if posSizeRiskBased > maxPosSize and posSize != 0: self.log('info', 'Position size reduced to comply with regulatory margin requirements')
+        if posSize == 0: self.log('info', 'Insufficient funds. {} {} {}@{}'.format(
+            action, posSizeRiskBased, symbol, price
+        ))
+        if posSize < 0:
+            posSize = 0
+            self.log('error', 'Negative pos size. {} {}@{} {}@risk'.format(
+                action, symbol, price, risk
+            ))
+        return posSize
+
+    def maxStockPosition(self, funds, action, price):
+        maxPos = 0
+        if action == 'BUY':
+            coeff = 1 if funds <= 2000 else 2
+            maxPos = coeff * funds / price
+        elif action == 'SHORT':
+            if price > 16.67:
+                maxPos = (funds/price)/.3
+            elif price > 5. and price <= 16.67:
+                maxPos = funds/5.
+            elif price > 2.5 and price <= 5.:
+                maxPos = funds/price
+            else:
+                maxPos = funds/2.5
+        maxPos = math.floor(maxPos)
+        return maxPos
+
+    def resetStratInfo(self, symbol, strategy):
+        self.positions[symbol][strategy] = deepcopy(STRATEGY_INFO)
+
+    def deactivateStrategy(self, symbol, strategy, savePositions = True):
+        if symbol not in self.positions.keys() or symbol not in self.portfolio.keys():
+            self.log('error', 'Symbol {} is not being tracked'.format(symbol))
+            return
+        if strategy not in self.positions[symbol].keys():
+            self.log('error', 'Unknown strategy {} for symbol {}'.format(strategy, symbol))
+            return
+        self.positions[symbol][strategy]['state'] = 'deactivated'
+        self.positions[symbol][strategy]['lastPrice'] = -1
+        self.portfolio[symbol]['permissions'][strategy] = False
+        self.savePortfolio()
+        if savePositions: self.savePositions()
+
 
     def mapTimeToMktState(self, t):
         if t.weekday() in [5, 6]: return 0
@@ -1631,24 +2550,48 @@ class TableWidget(QWidget):
             self.holidayLabel.setText('')
             self.holidayLabel.setMaximumHeight(0)
 
-    def check_gpu_availability(self):
-        if not cuda.is_available():
-            self.closeApp.emit()
-            msgBox = InfoMessageBox(
-                'No GPU detected',
-                'No GPU detected.\n\nApplication was terminated.',
-                error=True
-                )
+    def terminateReconnector(self):
+        self.reconnectionInProgress = False
+        self.reconnectThread.quit()
+        self.reconnector.deleteLater()
+        self.reconnectThread.deleteLater()
+
+
+    def reconnect(self):
+        self.reconnectionInProgress = True
+        # self.connectionEstablished.emit(0)
+        self.isConnected = False
+        self.log('info', 'Connection lost. Trying to reconnect')
+
+        self.reconnectThread = QThread()
+        self.reconnector = Reconnector()
+        # self.reconnector.log.connect(self.log, Qt.DirectConnection)
+        self.reconnector.reconnectSignal.connect(self.worker.reconnect, Qt.DirectConnection)
+        self.reconnector.terminateSelf.connect(self.terminateReconnector, Qt.DirectConnection)
+        self.reconnector.moveToThread(self.reconnectThread)
+        self.reconnectThread.start()
+
+        self.reconnector.reconnect()
+
+    def isTWSRunning(self):
+        return 'java' in [i.name() for i in psutil.process_iter()]
 
 
     def showTime(self):
+        # Restart if need be
+        self.secSinceLastConnCheck += 1
+        if self.secSinceLastConnCheck >= self.RESTART_TIMEOUT_SEC:
+            self.secSinceLastConnCheck = 0
+            if not self.worker.isConnected(): 
+                self.connectionEstablished.emit(0)
+                self.restartApp.emit()
+
         t = datetime.now() + self.timeMultiplier * timedelta(hours=self.timeDIfferenceWithEDT)
         if t.day != self.lastKnownDay:
-            self.check_gpu_availability()
             self.getSessionTimesToday(t)
             self.lastKnownDay = t.day
             self.refreshHolidayLabel()
-            self.get_timeframe_marks(default=False)
+            # self.get_timeframe_marks(default=False)
             if not self.isConnected: self.enable_connect_button()
             if self.settings['strategy']['flatten_eod']:
                 minutes_to_close = self.settings['strategy']['flatten_eod_seconds'] // 60
@@ -1669,48 +2612,50 @@ class TableWidget(QWidget):
             self.tell_downloader_to_stop.emit()
         tint = t.hour * 10000 + t.minute * 100
         if self.initialRun: self.last_tint = tint
-        if self.timeframe_marks_ready and (tint in self.timeframe_marks_int or self.debug) and tint != self.last_tint and not self.initialRun:
-            self.last_tint = tint
-            self.sample_prices(t)
-        if tint > self.maxT and t.weekday() not in [5, 6] and not self.positionsCLosedToday and self.settings['strategy']['flatten_eod']:
+
+        """
+        if self.settings['strategy']['flatten_eod'] and tint > self.maxT and t.weekday() not in [5, 6] and not self.positionsCLosedToday:
             for reqId in list(self.watchlistItems.keys()):
                 if self.isConnected: self.close_all_positions(reqId, eod=True)
             self.positionsCLosedToday = True
+        """
 
+        self.tint = int(tint/100)
+        self.mint = t.minute
+        self.time = t
 
-    def sample_prices(self, t):
-        self.dataUpdated = np.zeros(self.nStocks, dtype='bool')
-        self.updatedPrices = np.zeros(self.nStocks, dtype='float64')
-        n = 0
-        for reqId, item in self.watchlistItems.items():
-            if item.isTrading and item._last.text() != '-':
-                try:
-                    p = float(item._last.text())
-                    self.dataUpdated[n] = True
-                    self.updatedPrices[n] = p
-                except: self.log('error', 'Parsing error occured')
-            n += 1
-
-        if sum(self.dataUpdated) > 0: self.realtime_calc(t)
+        
 
 
     def stop_dash_thread(self):
-        self.dashThread.quit()
+        return
+        # self.dashThread.quit()
 
 
-    def open_presets_window(self):
-        self.presets.show()
+    # def open_presets_window(self):
+    #     self.presets.show()
+
+    def show_cancel_order_window(self):
+        self.orderCancelWindow.orders = deepcopy(self.orders)
+        self.orderCancelWindow.repopulate_selector()
+        self.orderCancelWindow.show()
+
+    def submit_order_window(self):
+        self.submitOrderWindow.show()
 
 
     def open_chart_window(self):
+        return
 
-
-        # self.chartWindow.quitDash.connect(self.dashWorker.stop)
-        # self.chartWindow.quitDash.connect(self.dashWorker.deleteLater)
-        # self.chartWindow.quitDash.connect(self.dashThread.deleteLater)
+        """
+        self.chartWindow.quitDash.connect(self.dashWorker.stop)
+        self.chartWindow.quitDash.connect(self.dashWorker.deleteLater)
+        self.chartWindow.quitDash.connect(self.dashThread.deleteLater)
+        """
 
         self.chartWindow.show_graph()
 
+    """
     def open_explorer_window(self):
         if self.explorerReady:
             if not self.explorerInitiated:
@@ -1720,7 +2665,15 @@ class TableWidget(QWidget):
                 self.explorerInitiated = True
             self.explorer.show()
         else: msgBox = InfoMessageBox('Info', 'Data Explorer is not yet ready\n\nPlease try again later\n')
+    """
 
+    def show_equity_window(self):
+        self.equityPlot._plot(deepcopy(self.cumEquity))
+        self.equityPlot.show()
+
+    def show_quick_chart(self):
+        self.qChart.show()
+        
 
     def enable_connect_button(self):
         self.connectButton.setStyleSheet("QPushButton {background-color: #f39c12; color: #2a2a2a; font-weight: bold; border: 1px solid #2a2a2a;}")
@@ -1800,9 +2753,10 @@ class TableWidget(QWidget):
 
     @pyqtSlot()
     def on_click(self):
-        print("\n")
-        for currentQTableWidgetItem in self.tableWidget.selectedItems():
-            print(currentQTableWidgetItem.row(), currentQTableWidgetItem.column(), currentQTableWidgetItem.text())
+        return
+        # print("\n")
+        # for currentQTableWidgetItem in self.tableWidget.selectedItems():
+        #     print(currentQTableWidgetItem.row(), currentQTableWidgetItem.column(), currentQTableWidgetItem.text())
 
     @pyqtSlot()
     def open_symbol_lookup_window(self):
@@ -1854,7 +2808,7 @@ class TableWidget(QWidget):
             msg.exec_()
         elif exitcode == 1:
             self.searchWindow = SearchWindow(self.searchQuery, contractDescriptions, 'watchlist')
-            self.searchWindow.sendContractToWatchlist.connect(self.addToWatchlist, Qt.DirectConnection)
+            self.searchWindow.sendContractToWatchlist.connect(self.addToWatchlistFromSearch, Qt.DirectConnection)
             self.searchWindow.show()
             self.status_message.emit('')
             self.enable_search_button()
@@ -1875,7 +2829,7 @@ class TableWidget(QWidget):
 
             self.searchWindow.vlayout = QVBoxLayout()
 
-            self.searchWindow.symInfo = QLabel("QuantTrader")
+            self.searchWindow.symInfo = QLabel("QTrader")
             self.searchWindow.symInfo.setAlignment(Qt.AlignCenter)
             # self.title.setStyleSheet("QLabel {font-weight: bold; color: black; font-size: 18px;}")
             self.searchWindow.vlayout.addWidget(self.searchWindow.symInfo)
@@ -1894,13 +2848,13 @@ class TableWidget(QWidget):
 
 
 
-        # self.title = QLabel("QuantTrader")
+        # self.title = QLabel("QTrader")
         # self.title.setAlignment(Qt.AlignCenter)
         # self.title.setStyleSheet("QLabel {font-weight: bold; color: black; font-size: 18px;}")
         # layout.addWidget(self.title)
 
 
-
+    """
     def symbolSamples(self, reqId: int,
                            contractDescriptions):
             super().symbolSamples(reqId, contractDescriptions)
@@ -1919,6 +2873,7 @@ class TableWidget(QWidget):
                     contractDescription.contract.currency, derivSecTypes,
                     contractDescription.contract.description,
                     contractDescription.contract.issuerId))
+    """
 
 
 
@@ -1939,15 +2894,24 @@ class TableWidget(QWidget):
     def downloader_requested_historical_data(self, contractDescription, endDateTime):
         return
 
+    def worker_reconnected(self):
+        print('Worker connection established')
+        if self.worker.isConnected():
+            self.isConnected = True
+            # self.connectionEstablished.emit(1)
+
     def worker_connected(self, code):
         if code == 1:
             self.disable_connect_button()
             self.status_message.emit('')
             self.connectionLabel.setText("Status:    connected")
             self.isConnected = True
+            self.initialConnectionEstablished = True
             self.connectionEstablished.emit(1)
+            self.connTimeout = 1.
             self.downloader.initiate()
             self.lastHistoricalDataRequest = datetime.now()
+            if self.settings['account']['delayed_quotes']: self.worker.reqMarketDataType(3)
             self.downloader.first_historical_data()
         elif code == 0:
             msg = QMessageBox()
@@ -1961,8 +2925,9 @@ class TableWidget(QWidget):
         additional_message = ''
         if code == 502:
             self.disable_connect_button()
-            self.status_message.emit('Critical error. Restart the application.')
+            # self.status_message.emit('Critical error. Restart the application.')
             additional_message = '\n\nTHIS ERROR IS CRITICAL. YOU MUST RESTART THE PROGRAM NOW!'
+            
         msg = QMessageBox()
         msg.setIcon(QMessageBox.Critical)
         msg.setInformativeText(message+additional_message)
@@ -2152,64 +3117,131 @@ class TableWidget(QWidget):
                 del self.c[i][:(len(self.c[i])-_threshold)]
 
 
-    def get_algo_inputs(self):
-        self.AlgoInputs = []
-        n = 0
-        for _, algo_settings in self.preset_data.items():
-            settings = np.array([
-                algo_settings['2min'],
-                algo_settings['2max'],
-                algo_settings['3min'],
-                algo_settings['2max'],
-                algo_settings['12min'],
-                algo_settings['12max'],
-                algo_settings['avgmin'],
-                algo_settings['avgmax']
-            ], dtype='float64')
-            self.AlgoInputs.append(settings)
-            n += 1
-        self.AlgoInputs = np.array(self.AlgoInputs, dtype='float64')
-
-
-    def initialize_data_structures(self):
-        self.STDs = np.zeros(shape=(self.nStocks, len(cudafns.SD_Periods), self.nDatapoints), dtype='float64')
-        self.STDs = self.STDs.tolist()
-        self.Averages = np.zeros(shape=(self.nStocks, len(cudafns.AVG_Periods) + 1, self.nDatapoints), dtype='float64')
-        self.Averages = self.Averages.tolist()
-        self.Signals = np.zeros(shape=(self.nStocks, self.nAlgos, self.nDatapoints), dtype='int8')
-        self.get_algo_inputs()
-
-    def init_report(self):
-        self.reportDT = []
-        self.reportCloses = []
-        self.reportSignals = []
-        for i in range(self.nStocks):
-            self.reportDT.append([])
-            self.reportCloses.append([])
-            self.reportSignals.append([])
-
-        if self.nDatapoints > 0 and self.nAlgos > 0:
-
-            for s in range(self.nStocks):
-                for i in range(self.nDatapoints):
-                    dt = self.dt[s][i].strftime("%Y-%b-%d %H:%M:%S")
-                    self.reportDT[s].append(dt)
-                    self.reportCloses[s].append(self.c[s][i])
-                    signals = []
-                    for a in range(self.nAlgos):
-                        signal, value = '', self.Signals[s][a][i]
-                        if value == 1: signal = 'buy'
-                        if value == -1: signal = 'sell'
-                        signals.append(signal)
-                    self.reportSignals[s].append(signals)
-
     def commission_update(self, orderID, commission):
         if orderID in self.pending_orders and commission < 10**6:
             orderData = self.pending_orders[orderID]
             orderData['commissions'] = commission
 
+    def account_info_update(self, key, value, currency, account):
+        if key in self.accountInfoList:
+            row = self.accountInfoList.index(key)
+            self.accountInfo[key]['value'] = value
+            w_item = QTableWidgetItem( str(value) )
+            w_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            if row%2 == 1: w_item.setBackground(QColor(74, 105, 135))
+            self.accountTable.setItem(row, 1, w_item)
 
-    def order_status_update(self, orderID, remaining, VWAP):
+
+    def position_update(self, symbol, exchange, position, marketPrice, averageCost, marketValue, unrealizedPNL, realizedPNL, accountName):
+        sym = symbol.upper()
+        marketPrice = round(marketPrice, 3)
+        averageCost = round(averageCost, 4)
+        if sym in list(self.accPositions.keys()):
+            if realizedPNL != self.accPositions[sym]['realizedPnL']:
+                pnl = realizedPNL - self.accPositions[sym]['realizedPnL']
+                
+                t = datetime.now() + self.timeMultiplier * timedelta(hours=self.timeDIfferenceWithEDT)
+                qty = float(abs(position-self.accPositions[sym]['position']))
+                if (position > 0 and self.accPositions[sym]['position'] < 0) or (position < 0 and self.accPositions[sym]['position'] > 0):
+                    qty = self.accPositions[sym]['position']
+                item = (sym, t.strftime('%Y-%m-%d %H:%M:%S'),
+                        float(marketPrice), qty, float(round(pnl, 2)))
+
+                with sqlite3.connect(self.DB_PATH) as con:
+                    cur = con.cursor()
+                    cur.execute("BEGIN TRANSACTION;")
+                    sql = ''' INSERT INTO equity(ticker,datetime,mktprice,qty,pnl)
+                                      VALUES(?,?,?,?,?) '''
+                    cur.execute(sql, item)
+                    cur.execute("COMMIT;")
+                    cur.close()
+
+                row = 0
+                self.equityTable.insertRow(row)
+                self.equityTable.setItem(row, 0, QTableWidgetItem(item[0]))
+                self.equityTable.item(row, 0).setForeground(QColor(243, 156, 18))
+                self.equityTable.item(row, 0).setFont(self.symbolFont)
+                self.equityTable.setItem(row, 1, QTableWidgetItem(item[1][:10]))
+                self.equityTable.setItem(row, 2, QTableWidgetItem(item[1][11:]))
+                self.equityTable.setItem(row, 3, QTableWidgetItem(str(item[2])))
+                self.equityTable.setItem(row, 4, QTableWidgetItem(str(item[3])))
+                self.equityTable.setItem(row, 5, QTableWidgetItem( ''.join(['$', str(round(item[4], 2))]) ))
+                c = QColor(0, 230, 118) if float(item[4]) >= .0 else QColor(255, 82, 82)
+                self.equityTable.item(row, 5).setForeground(c)
+                # self.equityTable.item(row, 5).setFont(self.symbolFont)
+                self.equity.append(item[4])
+                self.cumEquity.append(self.cumEquity[-1]+item[4])
+
+
+            row = list(self.accPositions.keys()).index(sym)
+            self.accPositions[sym]['position'] = position
+            self.positionsTable.item(row, 2).setText(str(position))
+            self.accPositions[sym]['mktPrice'] = marketPrice
+            self.positionsTable.item(row, 3).setText(str(marketPrice))
+            self.accPositions[sym]['VWAP'] = averageCost
+            self.positionsTable.item(row, 4).setText(str(averageCost))
+            self.accPositions[sym]['mktValue'] = marketValue
+            self.positionsTable.item(row, 5).setText(str(marketValue))
+            self.accPositions[sym]['unrealizedPnL'] = unrealizedPNL
+            self.positionsTable.item(row, 6).setText(str(unrealizedPNL))
+            self.accPositions[sym]['realizedPnL'] = realizedPNL
+            self.positionsTable.item(row, 7).setText(str(realizedPNL))
+            if unrealizedPNL != .0:
+                c = QColor(1, 99, 52) if unrealizedPNL >= .0 else QColor(133, 41, 41)
+                for j in range(self.positionsTable.columnCount()):
+                    self.positionsTable.item(row, j).setBackground(c)
+            elif position == 0:
+                for j in range(self.positionsTable.columnCount()):
+                    self.positionsTable.item(row, j).setBackground(QColor(44, 62, 80))
+
+            
+
+        else:
+            self.accPositions[sym] = deepcopy(self.POS_TEMPLATE)
+            self.accPositions[sym]['exchange'] = exchange
+            self.accPositions[sym]['position'] = position
+            self.accPositions[sym]['mktPrice'] = marketPrice
+            self.accPositions[sym]['VWAP'] = averageCost
+            self.accPositions[sym]['mktValue'] = marketValue
+            self.accPositions[sym]['unrealizedPnL'] = unrealizedPNL
+            self.accPositions[sym]['realizedPnL'] = realizedPNL
+            self.accPositions[sym]['account'] = accountName
+
+            row = self.positionsTable.rowCount()
+            self.positionsTable.insertRow(row)
+            self.positionsTable.setItem(row, 0, QTableWidgetItem(str(sym)))
+            self.positionsTable.item(row, 0).setFont(self.symbolFont)
+            self.positionsTable.item(row, 0).setForeground(QBrush(QColor(243, 156, 18)))
+            self.positionsTable.setItem(row, 1, QTableWidgetItem(str(exchange)))
+            self.positionsTable.setItem(row, 2, QTableWidgetItem(str(position)))
+            self.positionsTable.setItem(row, 3, QTableWidgetItem(str(marketPrice)))
+            self.positionsTable.setItem(row, 4, QTableWidgetItem(str(averageCost)))
+            self.positionsTable.setItem(row, 5, QTableWidgetItem(str(marketValue)))
+            self.positionsTable.setItem(row, 6, QTableWidgetItem(str(unrealizedPNL)))
+            self.positionsTable.setItem(row, 7, QTableWidgetItem(str(realizedPNL)))
+            self.positionsTable.setItem(row, 8, QTableWidgetItem(str(accountName)))
+
+            if unrealizedPNL != .0:
+                c = QColor(1, 99, 52) if unrealizedPNL > .0 else QColor(133, 41, 41)
+                for j in range(self.positionsTable.columnCount()):
+                    self.positionsTable.item(row, j).setBackground(c)
+        
+        symbol_in_portfolio = False
+        for reqId in self.watchlist.keys():
+            if self.watchlist[reqId].contract.symbol == symbol:
+                symbol_in_portfolio = True
+                break
+        if symbol_in_portfolio:
+            self.watchlistItems[reqId]._position.setText(str( int(position) ))
+            self.watchlistItems[reqId]._margin.setText(str( round(marketValue, 2) if position != .0 else 0 ))
+            stylesheet = "QLabel{color:#00E676;}" if position > 0 else 'QLabel{color: #ff5252;}'
+            if position == 0: stylesheet = "QLabel{color:#777777;}"
+            self.watchlistItems[reqId]._position.setStyleSheet(stylesheet)
+            self.watchlistItems[reqId]._margin.setStyleSheet(stylesheet)
+
+
+    """
+    def order_status_update_old(self, orderID, remaining, VWAP):
 
         if remaining == 0 and orderID in list(self.pending_orders.keys()):
             orderData = self.pending_orders[orderID]
@@ -2219,7 +3251,6 @@ class TableWidget(QWidget):
                 self.positions[orderData['symbol']]['positions'][key] += orderData['adjustments'][i]
                 i += 1
             self.savePositions()
-            self.update_position_table()
 
 
             t = datetime.now() + self.timeMultiplier * timedelta(hours=self.timeDIfferenceWithEDT)
@@ -2235,18 +3266,19 @@ class TableWidget(QWidget):
                     tradeInfo.append(abs( pos_change ))
                     tradeInfo.append(VWAP)
                     # tradeInfo.append( round(orderData['commissions'] * 1. * abs(pos_change) / abs(orderData['pos_change']) , 7) )
-                    self.trades.append(tradeInfo)
+                    self.trades_old.append(tradeInfo)
 
-                    rowPosition = self.tradesTable.rowCount()
-                    self.tradesTable.insertRow(rowPosition)
+                    rowPosition = self.tradesTable_old.rowCount()
+                    self.tradesTable_old.insertRow(rowPosition)
                     pos = 0
                     for _item in tradeInfo:
-                        self.tradesTable.setItem(rowPosition, pos, QTableWidgetItem( str(_item) ))
+                        self.tradesTable_old.setItem(rowPosition, pos, QTableWidgetItem( str(_item) ))
                         pos += 1
 
             self.pending_orders.pop(orderID, None)
 
         return
+    """
 
     def prepare_order(self, orderId, reqId, qty):
         order = Order()
@@ -2259,7 +3291,7 @@ class TableWidget(QWidget):
             contract.symbol, contract.secType, contract.exchange, contract.currency = 'AAPL', 'STK', 'SMART', 'USD'
         self.transmit_order.emit(orderId, contract, order)
 
-
+    """
     def close_all_positions(self, reqId, eod=False):
         item = self.watchlistItems[reqId]
         n = list(self.watchlistItems.keys()).index(reqId)
@@ -2287,14 +3319,16 @@ class TableWidget(QWidget):
         if not eod:
             self.positions.pop(self.symbols[n], None)
             self.portfolio.pop(self.symbols[n], None)
-            self.nStocks -= 1
+            # self.nStocks -= 1
             del self.symbols[n]
         else:
             for key in self.positions[self.symbols[n]]['positions'].keys():
                 self.positions[self.symbols[n]]['positions'][key] = 0
         self.savePositions()
+    """
 
 
+    """
     def execute_pending_positions(self):
         reqIds = list(self.watchlistItems.keys())
         for n in range(len(self.dataUpdated)):
@@ -2317,280 +3351,325 @@ class TableWidget(QWidget):
                     self.prepare_order(self.orderID, reqIds[n], self.pending_positions_total[n])
                     self.orderID += 1
             time.sleep(1./self.REQUEST_LIMIT_PER_SECOND)
-
-
-    def get_pending_positions(self):
-        self.pending_positions_per_algo = []
-        self.pending_positions_total = []
-        self.algoNames = list(self.preset_data.keys())
-        for n in range(len(self.dataUpdated)):
-            self.pending_positions_per_algo.append( [ 0 for _ in range(self.nAlgos) ] )
-            if self.dataUpdated[n]:
-                pos_size =  int(math.floor( 1. * int(self.portfolio[ self.symbols[n] ]['pos_size']) / self.updatedPrices[n] ))
-                for algoIX in range(self.nAlgos):
-                    algoSignal = self.Signals[n][algoIX][-1]
-                    algoPosition = self.positions[self.symbols[n]]['positions'][self.algoNames[algoIX]]
-                    self.pending_positions_per_algo[-1][algoIX] = pos_size if algoSignal > 0 else -1 * algoPosition
-            self.pending_positions_total.append( sum(self.pending_positions_per_algo[-1]) )
-
-        self.execute_pending_positions()
-
-
-    def realtime_calc(self, t):
-
-        dt = datetime(t.year, t.month, t.day, t.hour, t.minute, 0)
-        for n in range(len(self.dataUpdated)):
-            if self.dataUpdated[n]:
-                self.dt[n].append(dt)
-                del self.dt[n][0]
-
-                self.c[n].append(self.updatedPrices[n])
-                del self.c[n][0]
-
-                r = .0
-                if len(self.c[n]) > 2: r = (self.updatedPrices[n] - self.c[n][-2]) / self.c[n][-2]
-                self.returns[n].append(r)
-                del self.returns[n][0]
-
-                for m in range(len(cudafns.SD_Periods)):
-                    self.STDs[n][m].append(.0)
-                    del self.STDs[n][m][0]
-
-                for m in range(len(cudafns.AVG_Periods) + 1):
-                    self.Averages[n][m].append(.0)
-                    del self.Averages[n][m][0]
-
-                for m in range(self.nAlgos):
-                    self.Signals[n][m].append(0)
-                    del self.Signals[n][m][0]
-
-
-
-        self.STDs = np.array(self.STDs, dtype='float64')
-        self.Averages = np.array(self.Averages, dtype='float64')
-        self.Signals = np.array(self.Signals, dtype='int8')
-
-        self.BLOCKS_PER_GRID = math.floor( (self.nStocks*len(cudafns.SD_Periods)) / self.THREADS_PER_BLOCK + 1)
-
-        t_started = time.time()
-
-        stream = cuda.stream()
-        cuda_returns = cuda.to_device( np.array(self.returns, dtype='float64'), stream=stream)
-        cuda_STDs = cuda.to_device(self.STDs, stream=stream)
-        cuda_SD_Periods = cuda.to_device(np.array(cudafns.SD_Periods, dtype='int'), stream=stream)
-
-        cudafns.compute_standard_deviations_realtime[self.BLOCKS_PER_GRID, self.THREADS_PER_BLOCK, stream](
-            cuda_returns, cuda_STDs, cuda_SD_Periods, (self.nStocks*len(cudafns.SD_Periods)), self.nStocks)
-
-        cuda_STDs.copy_to_host(self.STDs, stream=stream)
-        stream.synchronize()
-
-        self.BLOCKS_PER_GRID = math.floor( (self.nStocks*len(cudafns.AVG_Periods)) / self.THREADS_PER_BLOCK + 1)
-
-        stream = cuda.stream()
-        cuda_STDs = cuda.to_device(self.STDs, stream=stream)
-        cuda_Averages = cuda.to_device(self.Averages, stream=stream)
-        cuda_SD_Periods = cuda.to_device(np.array(cudafns.SD_Periods, dtype='int'), stream=stream)
-        cuda_AVG_Periods = cuda.to_device(np.array(cudafns.AVG_Periods, dtype='int'), stream=stream)
-
-        cudafns.compute_averages_realtime[self.BLOCKS_PER_GRID, self.THREADS_PER_BLOCK, stream](
-            cuda_STDs, cuda_Averages, cuda_SD_Periods, cuda_AVG_Periods, (self.nStocks*len(cudafns.AVG_Periods)), self.nStocks)
-
-        cuda_Averages.copy_to_host(self.Averages, stream=stream)
-        stream.synchronize()
-
-        n = self.Averages.shape[2] - 1
-        for s in range(self.nStocks):
-            if self.dataUpdated[s]:
-                avg = .0
-                for i in range(len(cudafns.AVG_Periods)):
-                    avg += self.Averages[s][i][n]
-                avg /= len(cudafns.AVG_Periods)
-                self.Averages[s][i+1][n] = avg
-
-        self.BLOCKS_PER_GRID = math.floor( (self.nStocks*self.nAlgos) / self.THREADS_PER_BLOCK + 1)
-
-        stream = cuda.stream()
-        cuda_Averages = cuda.to_device(self.Averages, stream=stream)
-        cuda_Signals = cuda.to_device(self.Signals, stream=stream)
-        cuda_InputMatrix = cuda.to_device(self.AlgoInputs, stream=stream)
-
-        cudafns.compute_signals_realtime[self.BLOCKS_PER_GRID, self.THREADS_PER_BLOCK, stream](
-            cuda_Averages, cuda_Signals, cuda_InputMatrix,
-            self.FIRST_VALID_INDEX, (self.nStocks*self.nAlgos), self.nStocks)
-
-        cuda_Signals.copy_to_host(self.Signals, stream=stream)
-        stream.synchronize()
-
-        t_finished = time.time()
-
-        self.STDs = self.STDs.tolist()
-        self.Averages = self.Averages.tolist()
-        self.Signals = self.Signals.tolist()
-
-        _dt = dt.strftime("%Y-%b-%d %H:%M:%S")
-        for n in range(self.nStocks):
-            if self.dataUpdated[n]:
-                self.reportDT[n].append(_dt)
-                self.reportCloses[n].append(self.c[n][-1])
-                signals = []
-                for a in range(self.nAlgos):
-                    signal, value = '', self.Signals[n][a][-1]
-                    if value == 1: signal = 'buy'
-                    if value == -1: signal = 'sell'
-                    signals.append(signal)
-                self.reportSignals[n].append(signals)
-
-        _t = t_finished - t_started
-        self.update_compute_time.emit(dt.strftime("%b-%d %H:%M:%S"), int(round(_t*1000., 0)))
-
-        self.get_pending_positions()
-
-        return
+    """
 
     def transmitDataToExplorer(self):
         self.data_to_explorer.emit(self.reportDT, self.reportCloses, self.reportSignals)
-
-
-    def initial_algo_run(self):
-        self.truncate_price_history(self.get_shortest_history())
-
-        self.nStocks = len(self.returns)
-        self.nDatapoints = 0
-        if self.nStocks > 0:
-            self.nDatapoints = len(self.returns[0])
-        self.nAlgos = 0
-        if len(self.portfolio) > 0:
-            self.nAlgos = len(self.preset_data)
-
-        if self.nDatapoints > 0 and self.nAlgos > 0:
-            self.update_kernel_status.emit('compiling')
-            self.initialize_data_structures()
-            STDs = np.array(self.STDs, dtype='float64')
-            self.BLOCKS_PER_GRID = math.floor(self.nDatapoints / self.THREADS_PER_BLOCK + 1)
-            cuda.select_device(self.CUDA_DEVICE_ID)
-            context = cuda.current_context(0)
-
-            stream = cuda.stream()
-            cuda_returns = cuda.to_device( np.array(self.returns, dtype='float64'), stream=stream)
-            cuda_STDs = cuda.to_device(STDs, stream=stream)
-            cuda_Periods = cuda.to_device(np.array(cudafns.SD_Periods, dtype='int'), stream=stream)
-
-            cudafns.compute_standard_deviations_init[self.BLOCKS_PER_GRID, self.THREADS_PER_BLOCK, stream](cuda_returns, cuda_STDs, cuda_Periods)
-
-            cuda_STDs.copy_to_host(STDs, stream=stream)
-            stream.synchronize()
-
-            Averages = np.array(self.Averages, dtype='float64')
-            stream = cuda.stream()
-            cuda_STDs = cuda.to_device(STDs, stream=stream)
-            cuda_Averages = cuda.to_device(Averages, stream=stream)
-            cuda_SD_Periods = cuda.to_device(np.array(cudafns.SD_Periods, dtype='int'), stream=stream)
-            cuda_AVG_Periods = cuda.to_device(np.array(cudafns.AVG_Periods, dtype='int'), stream=stream)
-
-            cudafns.compute_averages_init[self.BLOCKS_PER_GRID, self.THREADS_PER_BLOCK, stream](cuda_STDs, cuda_Averages, cuda_SD_Periods, cuda_AVG_Periods)
-
-            cuda_Averages.copy_to_host(Averages, stream=stream)
-            stream.synchronize()
-
-            MIN_DATAPOINTS = cudafns.SD_Periods[-1] + cudafns.AVG_Periods[-1] - 1
-            self.FIRST_VALID_INDEX = MIN_DATAPOINTS - 1
-            for n in range(self.nDatapoints):
-                if n < self.FIRST_VALID_INDEX: continue
-                for k in range(self.nStocks):
-                    avg = .0
-                    for i in range(len(cudafns.AVG_Periods)): avg += Averages[k][i][n]
-                    avg /= len(cudafns.AVG_Periods)
-                    Averages[k][len(cudafns.AVG_Periods)][n] = avg
-
-            self.BLOCKS_PER_GRID = math.floor( (self.nStocks*self.nAlgos) / self.THREADS_PER_BLOCK + 1)
-
-            stream = cuda.stream()
-            cuda_Averages = cuda.to_device(Averages, stream=stream)
-            cuda_Signals = cuda.to_device(self.Signals, stream=stream)
-            cuda_InputMatrix = cuda.to_device(self.AlgoInputs, stream=stream)
-
-            cudafns.compute_signals_init[self.BLOCKS_PER_GRID, self.THREADS_PER_BLOCK, stream](
-                cuda_Averages, cuda_Signals, cuda_InputMatrix,
-                self.FIRST_VALID_INDEX, (self.nStocks*self.nAlgos), self.nStocks)
-
-            cuda_Signals.copy_to_host(self.Signals, stream=stream)
-            stream.synchronize()
-
-            self.BLOCKS_PER_GRID = math.floor( (self.nStocks*len(cudafns.SD_Periods)) / self.THREADS_PER_BLOCK + 1)
-
-            stream = cuda.stream()
-            cuda_returns = cuda.to_device( np.array(self.returns, dtype='float64'), stream=stream)
-            cuda_STDs = cuda.to_device(STDs, stream=stream)
-            cuda_SD_Periods = cuda.to_device(np.array(cudafns.SD_Periods, dtype='int'), stream=stream)
-
-            cudafns.compute_standard_deviations_realtime[self.BLOCKS_PER_GRID, self.THREADS_PER_BLOCK, stream](
-                cuda_returns, cuda_STDs, cuda_SD_Periods, (self.nStocks*len(cudafns.SD_Periods)), self.nStocks)
-
-            stream.synchronize()
-
-            self.BLOCKS_PER_GRID = math.floor( (self.nStocks*len(cudafns.AVG_Periods)) / self.THREADS_PER_BLOCK + 1)
-
-            stream = cuda.stream()
-            cuda_STDs = cuda.to_device(STDs, stream=stream)
-            cuda_Averages = cuda.to_device(Averages, stream=stream)
-            cuda_SD_Periods = cuda.to_device(np.array(cudafns.SD_Periods, dtype='int'), stream=stream)
-            cuda_AVG_Periods = cuda.to_device(np.array(cudafns.AVG_Periods, dtype='int'), stream=stream)
-
-            cudafns.compute_averages_realtime[self.BLOCKS_PER_GRID, self.THREADS_PER_BLOCK, stream](
-                cuda_STDs, cuda_Averages, cuda_SD_Periods, cuda_AVG_Periods, (self.nStocks*len(cudafns.AVG_Periods)), self.nStocks)
-
-            stream.synchronize()
-
-            self.BLOCKS_PER_GRID = math.floor( (self.nStocks*self.nAlgos) / self.THREADS_PER_BLOCK + 1)
-
-            stream = cuda.stream()
-            cuda_Averages = cuda.to_device(Averages, stream=stream)
-            cuda_Signals = cuda.to_device(self.Signals, stream=stream)
-            cuda_InputMatrix = cuda.to_device(self.AlgoInputs, stream=stream)
-
-            cudafns.compute_signals_realtime[self.BLOCKS_PER_GRID, self.THREADS_PER_BLOCK, stream](
-                cuda_Averages, cuda_Signals, cuda_InputMatrix,
-                self.FIRST_VALID_INDEX, (self.nStocks*self.nAlgos), self.nStocks)
-
-            stream.synchronize()
-
-            self.STDs = STDs.tolist()
-            self.Averages = Averages.tolist()
-            self.Signals = self.Signals.tolist()
-
-            self.init_report()
-            self.update_kernel_status.emit('ready')
-            self.timeframe_marks_ready = True
-            self.initialRun = False
-            self.explorerReady = True
-
 
 
     def downloader_finished(self, success, timestamps, closes):
         self.historicalDataReady = True
         # print("First: {}, Last: {}".format(timestamps[0][-1], timestamps[0][0]))
         if len(self.watchlist) > 0:
-            self.data_transform(success, timestamps, closes)
-            self.initial_algo_run()
+            # self.data_transform(success, timestamps, closes)
             self.enable_start_button()
-        else:
-            msgBox = InfoMessageBox('Error', 'CUDA kernels can not be compiled without data. \n\nPlease add at least one instrument to portfolio and restart application\n')
+        # else:
+        #     msgBox = InfoMessageBox('Error', 'Data transform error')
 
     def receive_valid_id(self, id):
         self.orderID = id
+
+    def databarReceived(self, symbol, bar):
+        if symbol not in self.data:
+            self.data[symbol] = {}
+            template = {'datetime': [], 'open': [], 'high': [], 'low': [], 'close': [], 'volume': []}
+            self.data[symbol]['30min'] = deepcopy(template)
+            self.data[symbol]['1h'] = deepcopy(template)
+            self.data[symbol]['daily'] = deepcopy(template)
+
+        dt = bar.date[:17]
+        s = self.data[symbol]['30min']
+        s['datetime'].append(parser.parse(dt))
+        s['open'].append(bar.open)
+        s['high'].append(bar.high)
+        s['low'].append(bar.low)
+        s['close'].append(bar.close)
+        s['volume'].append(int(bar.volume))
+
+    
+    def databarsEnded(self, symbol):
+        if symbol not in self.data: return
+        item = None
+        for key in self.watchlistItems.keys():
+            if self.watchlistItems[key].symbol.upper() == symbol.upper():
+                item = self.watchlistItems[key]
+                break
+        if item == None: return
+        item._history.setText('Ready')
+        item._history.setStyleSheet("QLabel{color:#00E676; font-weight: normal;}")
+        self.create_secondary_dataseries(symbol)
+        self.adjust_execution_label(symbol)
+        self.worker.subscribeToStreamingData(key, self.watchlist[key])
+
+
+    def dttointmark(self, dt):
+        return(dt.hour*100 + dt.minute)
+    
+    def create_secondary_dataseries(self, symbol):
+        if self.data[symbol]['30min']['datetime'] == []: return
+        self.data[symbol]['1h'] = {'datetime': [], 'open': [], 'high': [], 'low': [], 'close': [], 'volume': []}
+        [cd, co, ch, cl, cc, cv] =    [ self.data[symbol]['30min']['datetime'][0],
+                                        self.data[symbol]['30min']['open'][0],
+                                        self.data[symbol]['30min']['high'][0],
+                                        self.data[symbol]['30min']['low'][0],
+                                        self.data[symbol]['30min']['close'][0],
+                                        self.data[symbol]['30min']['volume'][0]]
+
+        for n in range(1, len(self.data[symbol]['30min']['datetime'])):
+            if self.dttointmark(self.data[symbol]['30min']['datetime'][n]) in self.TFMARKS1H:
+                self.data[symbol]['1h']['datetime'].append(cd)
+                self.data[symbol]['1h']['open'].append(co)
+                self.data[symbol]['1h']['high'].append(ch)
+                self.data[symbol]['1h']['low'].append(cl)
+                self.data[symbol]['1h']['close'].append(cc)
+                self.data[symbol]['1h']['volume'].append(cv)
+                [cd, co, ch, cl, cc, cv] =    [ self.data[symbol]['30min']['datetime'][n],
+                                                self.data[symbol]['30min']['open'][n],
+                                                self.data[symbol]['30min']['high'][n],
+                                                self.data[symbol]['30min']['low'][n],
+                                                self.data[symbol]['30min']['close'][n],
+                                                self.data[symbol]['30min']['volume'][n]]        
+            else:
+                ch = max(ch, self.data[symbol]['30min']['high'][n])
+                cl = min(cl, self.data[symbol]['30min']['low'][n])
+                cc = self.data[symbol]['30min']['close'][n]
+                cv += self.data[symbol]['30min']['volume'][n]
+            
+        self.data[symbol]['1h']['datetime'].append(cd)
+        self.data[symbol]['1h']['open'].append(co)
+        self.data[symbol]['1h']['high'].append(ch)
+        self.data[symbol]['1h']['low'].append(cl)
+        self.data[symbol]['1h']['close'].append(cc)
+        self.data[symbol]['1h']['volume'].append(cv)
+
+        self.data[symbol]['daily'] = {'datetime': [], 'open': [], 'high': [], 'low': [], 'close': [], 'volume': []}
+        [cd, co, ch, cl, cc, cv] =    [ self.data[symbol]['30min']['datetime'][0],
+                                        self.data[symbol]['30min']['open'][0],
+                                        self.data[symbol]['30min']['high'][0],
+                                        self.data[symbol]['30min']['low'][0],
+                                        self.data[symbol]['30min']['close'][0],
+                                        self.data[symbol]['30min']['volume'][0]]
+        
+        for n in range(1, len(self.data[symbol]['30min']['datetime'])):
+            if self.data[symbol]['30min']['datetime'][n].day != self.data[symbol]['30min']['datetime'][n-1].day:
+                self.data[symbol]['daily']['datetime'].append(cd)
+                self.data[symbol]['daily']['open'].append(co)
+                self.data[symbol]['daily']['high'].append(ch)
+                self.data[symbol]['daily']['low'].append(cl)
+                self.data[symbol]['daily']['close'].append(cc)
+                self.data[symbol]['daily']['volume'].append(cv)
+                [cd, co, ch, cl, cc, cv] =    [ self.data[symbol]['30min']['datetime'][n],
+                                                self.data[symbol]['30min']['open'][n],
+                                                self.data[symbol]['30min']['high'][n],
+                                                self.data[symbol]['30min']['low'][n],
+                                                self.data[symbol]['30min']['close'][n],
+                                                self.data[symbol]['30min']['volume'][n]]
+            else:
+                ch = max(ch, self.data[symbol]['30min']['high'][n])
+                cl = min(cl, self.data[symbol]['30min']['low'][n])
+                cc = self.data[symbol]['30min']['close'][n]
+                cv += self.data[symbol]['30min']['volume'][n]
+
+        self.data[symbol]['daily']['datetime'].append(cd)
+        self.data[symbol]['daily']['open'].append(co)
+        self.data[symbol]['daily']['high'].append(ch)
+        self.data[symbol]['daily']['low'].append(cl)
+        self.data[symbol]['daily']['close'].append(cc)
+        self.data[symbol]['daily']['volume'].append(cv)
+
+        self.data[symbol]['meta'] = {
+            'openingTick': False,
+            'firstEverTick': True
+        }
+
+
+    def adjust_execution_label(self, symbol):
+        if symbol in self.portfolio.keys():
+                executing = False
+                for _, val in self.portfolio[symbol]['permissions'].items():
+                    if type(val) == bool and val: executing = True
+                for reqId in self.watchlistItems.keys():
+                    if symbol.upper() == self.watchlistItems[reqId].symbol.upper():
+                        if executing:
+                            self.watchlistItems[reqId]._execution.setText("On")
+                            self.watchlistItems[reqId]._execution.setStyleSheet("QLabel{color:#00E676;}")
+                        else:
+                            self.watchlistItems[reqId]._execution.setText("Off")
+                            self.watchlistItems[reqId]._execution.setStyleSheet("QLabel{color:#ff5252;}")
+                        break
+
+    def receive_all_data_from_downloader(self, data):
+        for symbol in data.keys():
+            self.data[symbol] = {}
+            self.data[symbol]['30min'] = deepcopy(data[symbol])
+            for key in self.data[symbol]['30min'].keys(): self.data[symbol]['30min'][key].reverse()
+        
+        for symbol in self.data.keys():
+            self.create_secondary_dataseries(symbol)
+            self.adjust_execution_label(symbol)
+        
+        self.subscribe_to_all_streaming.emit()
+
+    
+
+
+
+    def open_order_received(self, orderId, contract, order, orderState):
+        permId = int(order.permId)
+        if permId not in list(self.orders.keys()):
+            self.orders[permId] = deepcopy(self.ORDER_PRESET)
+
+            self.orders[permId]['symbol'] = contract.symbol.upper()
+            self.orders[permId]['exchange'] = contract.exchange
+            self.orders[permId]['action'] = order.action
+            self.orders[permId]['type'] = order.orderType
+            self.orders[permId]['qty'] = order.totalQuantity
+            self.orders[permId]['limit'] = order.lmtPrice
+            self.orders[permId]['stop'] = order.auxPrice
+            self.orders[permId]['status'] = orderState.status
+            self.orders[permId]['filled'] = 0
+            self.orders[permId]['remaining'] = order.totalQuantity
+            self.orders[permId]['avgfillprice'] = 'N/A'
+            self.orders[permId]['orderId'] = orderId
+            self.orders[permId]['permId'] = order.permId
+            self.orders[permId]['TIF'] = order.tif
+            self.orders[permId]['secType'] = contract.secType
+            self.orders[permId]['tradeReported'] = False
+
+            row = self.ordersTable.rowCount()
+            self.ordersTable.insertRow(row)
+            self.ordersTable.setItem(row, 0, QTableWidgetItem(str(self.orders[permId]['symbol'])))
+            self.ordersTable.item(row, 0).setForeground(QColor(243, 156, 18))
+            self.ordersTable.item(row, 0).setFont(self.symbolFont)
+            self.ordersTable.setItem(row, 1, QTableWidgetItem(str(self.orders[permId]['exchange'])))
+            self.ordersTable.setItem(row, 2, QTableWidgetItem(str(self.orders[permId]['action'])))
+            self.ordersTable.setItem(row, 3, QTableWidgetItem(str(self.orders[permId]['type'])))
+            if str(self.orders[permId]['action']) == 'SELL':
+                self.ordersTable.item(row, 2).setBackground(QColor(133, 41, 41))
+            else:
+                self.ordersTable.item(row, 2).setBackground(QColor(1, 99, 52))
+            self.ordersTable.setItem(row, 4, QTableWidgetItem(str(self.orders[permId]['qty'])))
+            self.ordersTable.setItem(row, 5, QTableWidgetItem(str(self.orders[permId]['limit'])))
+            self.ordersTable.setItem(row, 6, QTableWidgetItem(str(self.orders[permId]['stop'])))
+            self.ordersTable.setItem(row, 7, QTableWidgetItem(str(self.orders[permId]['status'])))
+            self.ordersTable.setItem(row, 8, QTableWidgetItem(str(self.orders[permId]['filled'])))
+            self.ordersTable.setItem(row, 9, QTableWidgetItem(str(self.orders[permId]['remaining'])))
+            self.ordersTable.setItem(row, 10, QTableWidgetItem(str(self.orders[permId]['avgfillprice'])))
+            self.ordersTable.setItem(row, 11, QTableWidgetItem(str(self.orders[permId]['TIF'])))
+            self.ordersTable.setItem(row, 12, QTableWidgetItem(str(self.orders[permId]['orderId'])))
+            self.ordersTable.setItem(row, 13, QTableWidgetItem(str(self.orders[permId]['permId'])))
+
+            # self.orderCancelWindow.orders = self.orders
+            # self.orderCancelWindow.repopulate_selector()
+
+
+    def order_status_update(self, orderId:int, status:str, filled:float, remaining:float, 
+                            avgFillPrice:float, permId:int):
+        if permId in list(self.orders.keys()):
+            self.orders[permId]['status'] = status
+            self.orders[permId]['filled'] = filled
+            self.orders[permId]['remaining'] = remaining
+            self.orders[permId]['avgfillprice'] = avgFillPrice
+
+            row = list(self.orders.keys()).index(permId)
+            self.ordersTable.item(row, 7).setText(status)
+            self.ordersTable.item(row, 8).setText(str(filled))
+            self.ordersTable.item(row, 9).setText(str(remaining))
+            self.ordersTable.item(row, 10).setText(str(avgFillPrice))
+
+            bg_c, fg_c = QColor(44, 62, 80), QColor(238, 238, 238)
+            if status == 'PreSubmitted':
+                bg_c, fg_c = QColor(181, 116, 13), QColor(15, 15, 15)
+            elif status == 'Submitted':
+                bg_c = QColor(1, 99, 52)
+            elif status == 'Filled':
+                bg_c, fg_c = QColor(190, 190, 190), QColor(15, 15, 15)
+            elif status == 'Cancelled':
+                bg_c = QColor(60, 60, 60)
+            self.ordersTable.item(row, 7).setBackground(QColor(bg_c))
+            self.ordersTable.item(row, 7).setForeground(QColor(fg_c))
+
+            if remaining == .0 or status == 'Cancelled': 
+                self.ordersTable.item(row, 2).setBackground(QColor(44, 62, 80))
+                self.orderCancelWindow.repopulate_selector()
+
+            if status == 'Filled' and remaining == .0 and not self.orders[permId]['tradeReported']:
+                    o = self.orders[permId]
+                    t = datetime.now() + self.timeMultiplier * timedelta(hours=self.timeDIfferenceWithEDT)
+                    trade = (o['symbol'], o['secType'], t.strftime('%Y-%m-%d %H:%M:%S'),
+                             o['action'], float(o['qty']), float(o['avgfillprice']),'')
+                    con = sqlite3.connect(self.DB_PATH)
+                    cur = con.cursor()
+                    cur.execute("BEGIN TRANSACTION;")
+                    sql = ''' INSERT INTO trades(ticker,sectype,datetime,action,qty,fill,pnl)
+                                      VALUES(?,?,?,?,?,?,?) '''
+                    cur.execute(sql, trade)
+                    cur.execute("COMMIT;")
+                    cur.close()
+
+                    row = 0
+                    self.tradesTable.insertRow(row)
+                    self.tradesTable.setItem(row, 0, QTableWidgetItem(trade[0]))
+                    self.tradesTable.item(row, 0).setForeground(QColor(243, 156, 18))
+                    self.tradesTable.item(row, 0).setFont(self.symbolFont)
+                    self.tradesTable.setItem(row, 1, QTableWidgetItem(trade[2][:10]))
+                    self.tradesTable.setItem(row, 2, QTableWidgetItem(trade[2][11:]))
+                    self.tradesTable.setItem(row, 3, QTableWidgetItem(trade[3]))
+                    if trade[3] == 'BUY':
+                        self.tradesTable.item(row, 3).setForeground(QColor(0, 230, 118))
+                    else: self.tradesTable.item(row, 3).setForeground(QColor(255, 82, 82))
+                    # self.tradesTable.item(row, 3).setFont(self.symbolFont)
+                    self.tradesTable.setItem(row, 4, QTableWidgetItem(str(trade[4])))
+                    self.tradesTable.setItem(row, 5, QTableWidgetItem(str(trade[5])))
+
+                    found = False
+                    for symbol, strats in self.positions.items():
+                        if found: break
+                        for name, strat in strats.items():
+                            if strat['activeOrderId'] == orderId:
+                                if strat['state'] == 'activated':
+                                    strat['slActive'] = True
+                                    strat['slQty'] = int(filled)
+                                    strat['state'] = 'initiated'
+                                    strat['vwap'] = avgFillPrice
+                                    strat['tpActive'] = True
+                                    strat['position'] = int(filled)
+                                    strat['activeOrderId'] = -1
+                                    strat['tpQty'] = math.ceil(filled/2)
+                                    strat['tpPrice'] = self.roundToNearestTick(strat['slPrice'] + 3 * (avgFillPrice - strat['slPrice']), avgFillPrice)
+                                elif strat['state'] == 'initiated':
+                                    if strat['orderInfo'] == 'stoppedOut':
+                                        self.resetStratInfo(symbol, name)
+                                        self.deactivateStrategy(symbol, name, savePositions=False)
+                                    elif strat['orderInfo'] == 'tpHit':
+                                        strat['tpActive'] = False
+                                        strat['tpQty'] = 0
+                                        strat['tpPrice'] = .0
+                                        strat['position'] -= int(filled)
+                                        strat['slQty'] -= int(filled)
+                                        strat['activeOrderId'] = -1 
+                                self.savePositions()
+                                found = True
+                                break
+
+                    self.orders[permId]['tradeReported'] = True
+        
+
 
     @pyqtSlot()
     def establish_connection(self):
         self.subscribe()
         self.disable_connect_button()
-        self.status_message.emit('Establishing connection...')
+        self.log('info', 'Establishing API connection')
+        self.status_message.emit('Establishing connection')
+        self.idleThread = QThread()
         self.thread = QThread()
-        self.worker = Worker()
+        self.worker = API()
         # self.worker.clientID = self.clientID()
         self.symInfoRequested.connect(self.worker.sym_search, Qt.DirectConnection)
         self.worker.signalEmitted.connect(self.readWorkerSignal, Qt.DirectConnection)
         self.worker.connected.connect(self.worker_connected, Qt.DirectConnection)
+        self.worker.reconnected.connect(self.worker_reconnected, Qt.DirectConnection)
         self.worker.emit_error.connect(self.error_received, Qt.DirectConnection)
         self.worker.log.connect(self.worker_log_msg, Qt.DirectConnection)
         self.worker.symbolInfo.connect(self.symbolInfoReceived, Qt.DirectConnection)
@@ -2608,37 +3687,56 @@ class TableWidget(QWidget):
         self.downloader.download_sequence_finished.connect(self.downloader_finished, Qt.DirectConnection)
         self.downloader.update_hist_request_time.connect(self.update_hist_request_time, Qt.DirectConnection)
         self.worker.tell_downloader_data_is_success.connect(self.downloader.data_end, Qt.DirectConnection)
+        self.downloader.transmitDataToMain.connect(self.receive_all_data_from_downloader, Qt.DirectConnection)
+        self.subscribe_to_all_streaming.connect(self.downloader.subscribe_to_all_streaming, Qt.DirectConnection)
+
         self.transmit_order.connect(self.worker.placeOrder, Qt.DirectConnection)
         self.worker.transmit_order_status.connect(self.order_status_update, Qt.DirectConnection)
         self.worker.transmit_commission.connect(self.commission_update, Qt.DirectConnection)
         self.worker.transmit_valid_id.connect(self.receive_valid_id, Qt.DirectConnection)
+        self.worker.transmit_account_info.connect(self.account_info_update, Qt.DirectConnection)
+        self.worker.transmit_position.connect(self.position_update, Qt.DirectConnection)
+        self.worker.transmit_open_order.connect(self.open_order_received, Qt.DirectConnection)
+        self.worker.tramsmitDataToMain.connect(self.databarReceived, Qt.DirectConnection)
+        self.worker.tellMainDataEnded.connect(self.databarsEnded, Qt.DirectConnection)
+        self.tell_worker_to_cancel_order.connect(self.worker.cancel_order, Qt.DirectConnection)
+        
 
         # Autocomplete
         # self.w._model.dataRequest.connect(self.worker.sym_search, Qt.DirectConnection)
         # self.worker.toAutocompleter.connect(self.w._model.dataReceived, Qt.DirectConnection)
 
         # Connection query
-        self.chartWindow.amIConnected.connect(self.worker.connectionStatus, Qt.DirectConnection)
-        self.worker.amIConnected.connect(self.chartWindow.updateConnectionStatus, Qt.DirectConnection)
+        # self.chartWindow.amIConnected.connect(self.worker.connectionStatus, Qt.DirectConnection)
+        # self.worker.amIConnected.connect(self.chartWindow.updateConnectionStatus, Qt.DirectConnection)
+
+        self.submitOrderWindow.amIConnected.connect(self.worker.connectionStatusOrder, Qt.DirectConnection)
+        self.worker.amIConnectedOrder.connect(self.submitOrderWindow.updateConnectionStatus, Qt.DirectConnection)
 
         # Matching symbols (source=chart)
-        self.chartWindow.lookupRequest.connect(self.worker.sym_search, Qt.DirectConnection)
-        self.worker.symInfoToChart.connect(self.chartWindow.lookupResultsReceived, Qt.DirectConnection)
-        self.chartWindow.requestHistData.connect(self.worker.getHistData, Qt.DirectConnection)
-        self.worker.sendHistDataToChart.connect(self.chartWindow.newDataReceived, Qt.DirectConnection)
+        # self.chartWindow.lookupRequest.connect(self.worker.sym_search, Qt.DirectConnection)
+        # self.worker.symInfoToChart.connect(self.chartWindow.lookupResultsReceived, Qt.DirectConnection)
+        # self.chartWindow.requestHistData.connect(self.worker.getHistData, Qt.DirectConnection)
+        # self.worker.sendHistDataToChart.connect(self.chartWindow.newDataReceived, Qt.DirectConnection)
+
+        # Matching symbols (source=order)
+        self.submitOrderWindow.lookupRequest.connect(self.worker.sym_search, Qt.DirectConnection)
+        self.worker.symInfoToOrder.connect(self.submitOrderWindow.lookupResultsReceived, Qt.DirectConnection)
+
+        self.submitOrderWindow.submit_order.connect(self.worker.submit_order, Qt.DirectConnection)
 
         self.worker.tick.connect(self.tick, Qt.DirectConnection)
 
         self.worker.moveToThread(self.thread)
 
 
-
-        self.thread.started.connect(self.worker.run)
+        self.thread.started.connect(self.worker.connect)
         self.worker.finished.connect(self.thread.quit)
         self.worker.finished.connect(self.worker.deleteLater)
         self.thread.finished.connect(self.thread.deleteLater)
         # self.worker.progress.connect(self.reportProgress)
 
+        self.worker.adjust_connection_settings(self.settings['connection']['port'], self.settings['connection']['clientId'], self.settings['account']['accountId'])
         self.thread.start()
         # self.worker.initiate()
 
@@ -2648,10 +3746,49 @@ class TableWidget(QWidget):
         self.thread.finished.connect(
             lambda: self.connectionLabel.setText("Status: disconnected")
         )
+        self.thread.finished.connect(
+            lambda: print('THREAD FINISHED')
+        )
+        
 
+def tracer(frame, event, arg = None):
+    code = frame.f_code
+    func_name = code.co_name
+    line_no = frame.f_lineno
+    # print(f"A {event} encountered in {func_name}() at line number {line_no} ") 
+    
+    return tracer 
+
+def restart(): 
+    os.execv(sys.executable, ['python'] + sys.argv)
+
+def printsignal(_signal): 
+    print(f"Received signal: {_signal}")
+
+def sigint_handler(_signal, frame):
+    printsignal(_signal)
+    restart()
+
+def sigabrt_handler(_signal, frame):
+    printsignal(_signal)
+    restart()
+    
+def sigsegv_handler(_signal, frame):
+    printsignal(_signal)
+    restart()
+
+def sigpipe_handler(_signal, frame):
+    printsignal(_signal)
+    restart()
 
 
 if __name__ == '__main__':
+    threading.settrace(tracer)
+    signal.signal(signal.SIGINT, sigint_handler)
+    signal.signal(signal.SIGABRT, sigabrt_handler)
+    signal.signal(signal.SIGSEGV, sigsegv_handler)
+    signal.signal(signal.SIGPIPE, sigpipe_handler)
+    
     path = os.path.dirname(os.path.abspath(__file__))
     app = QApplication(sys.argv)
     with open('{}/{}'.format(path, 'style.qss'), 'r') as f:

@@ -10,7 +10,7 @@ import json
 
 class PortfolioItemSettings(QWidget):
 
-    save_settings = pyqtSignal(object)
+    save_settings = pyqtSignal(object, str)
 
     def __init__(self, symbol, exchange, portfolio, parent=None):
         super().__init__(parent)
@@ -25,8 +25,8 @@ class PortfolioItemSettings(QWidget):
         self.shortcut_esc = QShortcut(QKeySequence('Esc'), self)
         self.shortcut_esc.activated.connect(self.close)
 
-        self.width = 300
-        self.height = 600
+        self.width = 400
+        self.height = 350
         self.colWidth = 80
 
         w = QWidget()
@@ -91,12 +91,19 @@ class PortfolioItemSettings(QWidget):
         _l.addWidget(self.pos_size_value, 1, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
 
         row = 2
-        self.checkboxes = []
-        for name, state in self.portfolio[self.symbol]['permissions'].items():
+        self.checkboxes, self.fields = [], []
+        for name, value in self.portfolio[self.symbol]['permissions'].items():
             name_title = QLabel(name)
-            name_value = QCheckBox()
-            name_value.setChecked( state )
-            self.checkboxes.append(name_value)
+            if type(value) == bool:
+                name_value = QCheckBox()
+                name_value.setChecked( value )
+                self.checkboxes.append(name_value)
+            elif type(value) == float:
+                name_value = QDoubleSpinBox()
+                name_value.setRange(0., 999999.)
+                name_value.setFixedWidth(self.colWidth)
+                name_value.setValue(value)
+                self.fields.append(name_value)
             _l.addWidget(name_title, row, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
             _l.addWidget(name_value, row, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
             row += 1
@@ -117,13 +124,17 @@ class PortfolioItemSettings(QWidget):
         self.show()
 
     def save(self):
-        permissions, n = {}, 0
-        for name, state in self.portfolio[self.symbol]['permissions'].items():
-            permissions[name] = self.checkboxes[n].isChecked()
-            n += 1
+        permissions, n, k = {}, 0, 0
+        for name, value in self.portfolio[self.symbol]['permissions'].items():
+            if type(value) == bool:
+                permissions[name] = self.checkboxes[n].isChecked()
+                n += 1
+            elif type(value) in [float, int]:
+                permissions[name] = float(self.fields[k].value())
+                k += 1
         settings = {}
         settings['permissions'] = permissions
         settings['pos_size'] = int(self.pos_size_value.value())
         self.portfolio[self.symbol] = settings
-        self.save_settings.emit(self.portfolio)
+        self.save_settings.emit(self.portfolio, self.symbol)
         self.close()

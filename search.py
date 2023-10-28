@@ -6,11 +6,12 @@ from PyQt5.QtCore import Qt, pyqtSlot, pyqtSignal
 class SearchWindow(QWidget):
 
     sendContractToChart = pyqtSignal(object, str)
+    sendContractToOrder = pyqtSignal(object)
     sendContractToWatchlist = pyqtSignal(object)
 
     def __init__(self, query, contractDescriptions, source):
         """
-        source          watchlist or chart
+        source          watchlist, chart or order
         """
         super().__init__()
 
@@ -48,6 +49,8 @@ class SearchWindow(QWidget):
         self.contractDescriptions = contractDescriptions
 
         self.shortcut = QShortcut(QKeySequence("Ctrl+Q"), self)
+        self.shortcut.activated.connect(self.close_window, Qt.DirectConnection)
+        self.shortcut = QShortcut(QKeySequence("Esc"), self)
         self.shortcut.activated.connect(self.close_window, Qt.DirectConnection)
         self.shortcut = QShortcut(QKeySequence("Ctrl+N"), self)
         self.shortcut.activated.connect(self.next, Qt.DirectConnection)
@@ -227,6 +230,7 @@ class SearchWindow(QWidget):
             self.hintLabel2 = QLabel("Ctrl+B: Previous")
             self.hintLabel3 = QLabel("Ctrl+Q: Close   ")
             enterHint = 'Chart   ' if source == 'chart' else 'Add to Portfolio'
+            if source == 'order': enterHint = 'Select'
             self.hintLabel4 = QLabel("Enter: " + enterHint)
             self.hintLabel1.setStyleSheet("QLabel {color: #95a5a6; font-style: italic;}")
             self.hintLabel2.setStyleSheet("QLabel {color: #95a5a6; font-style: italic;}")
@@ -247,6 +251,12 @@ class SearchWindow(QWidget):
 
             if source == 'chart':
                 self.addButton = QPushButton("Chart")
+                self.addButton.setStyleSheet("QPushButton {background-color: #f39c12; color: #2a2a2a; font-weight: bold; border: 1px solid #2a2a2a;}")
+                self.addButton.setFixedSize(100,30)
+                self.addButton.setEnabled(True)
+                self.addButton.clicked.connect(self.ok, Qt.DirectConnection)
+            elif source == 'order':
+                self.addButton = QPushButton("Select")
                 self.addButton.setStyleSheet("QPushButton {background-color: #f39c12; color: #2a2a2a; font-weight: bold; border: 1px solid #2a2a2a;}")
                 self.addButton.setFixedSize(100,30)
                 self.addButton.setEnabled(True)
@@ -402,6 +412,7 @@ class SearchWindow(QWidget):
     def ok(self):
         if not self.nothingFound and self.source == 'chart': self.sendContractToChart.emit(self.contractDescriptions[self.activeContract-1], 'unspecified')
         if not self.nothingFound and self.source == 'watchlist': self.sendContractToWatchlist.emit(self.contractDescriptions[self.activeContract-1])
+        if not self.nothingFound and self.source == 'order': self.sendContractToOrder.emit(self.contractDescriptions[self.activeContract-1])
         self.close()
 
 
@@ -448,7 +459,7 @@ class SearchWindow(QWidget):
 
     @pyqtSlot()
     def on_ctrl_q(self):
-        print('Exiting')
+        # print('Exiting')
         self.hide()
 
     def infoReceived(self, contractDescriptions):

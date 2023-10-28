@@ -25,7 +25,7 @@ class Settings(QWidget):
         self.width = 600
         self.widthSpacing = 100
 
-        self.settings = {"strategy": {"timeframe": 3, "onlyRTH_history": True, "onlyRTH_trading": True, "trade_all": True, "hist_excess": 50, "pos_size": 50, "flatten_eod": True, "flatten_eod_seconds": 300}, "connection": {"port": 4002, "clientId": 1}, "server": {"address": "000.000.000.000", "key": "", "role": "Client"}, "common": {"checkUpdates": True, "risk": 300}, "margin": {"intraday": 50, "overnight": 25}}
+        self.settings = {"strategy": {"onlyRTH_history": True, "onlyRTH_trading": True, "pos_size": 100, "flatten_eod": False, "flatten_eod_seconds": 300}, "connection": {"port": 4002, "clientId": 0}, "server": {"address": "000.000.000.000", "key": "", "role": "Client"}, "common": {"checkUpdates": True, "risk": 300, "animation": True}, "margin": {"intraday": 19, "overnight": 29}, "account": {"accountId": "DU1869966", "delayed_quotes": True}}
 
         fileName = path = '{}{}{}'.format( os.path.dirname(os.path.abspath(__file__)), '/config/', 'settings.json')
         if os.path.isfile(fileName):
@@ -81,19 +81,21 @@ class Settings(QWidget):
         self.clientID_v.setFixedSize(75,28)
         self.clientID_v.setTextMargins(10, 1, 10, 1)
 
+
+
         server = QLabel('Server')
         server.setStyleSheet("QLabel{margin-top: 25px;}")
         server_separator = QWidget()
         server_separator.setFixedSize(self.width - self.widthSpacing, 1)
         server_separator.setStyleSheet('QWidget{background-color: "#aaaaaa"; text-align: left; width:100%;}')
 
-        timeframe = QLabel('Timeframe')
-        self.timeframe_spinbox = QSpinBox()
-        self.timeframe_spinbox.setRange(1,59)
-        self.timeframe_spinbox.setMaximum(59)
-        self.timeframe_spinbox.setFixedWidth(100)
-        self.timeframe_spinbox.setValue( self.settings['strategy']['timeframe'] )
-        self.timeframe_spinbox.setSuffix(" min")
+        # timeframe = QLabel('Timeframe')
+        # self.timeframe_spinbox = QSpinBox()
+        # self.timeframe_spinbox.setRange(1,59)
+        # self.timeframe_spinbox.setMaximum(59)
+        # self.timeframe_spinbox.setFixedWidth(100)
+        # self.timeframe_spinbox.setValue( self.settings['strategy']['timeframe'] )
+        # self.timeframe_spinbox.setSuffix(" min")
 
         onlyRTH_history = QLabel('Only RTH data in analyses')
         self.use_only_RTH_data = QCheckBox()
@@ -103,9 +105,9 @@ class Settings(QWidget):
         self.use_only_RTH_trading = QCheckBox()
         self.use_only_RTH_trading.setChecked( self.settings['strategy']['onlyRTH_trading'] )
 
-        trade_all = QLabel('Apply all presets to a new instrument')
-        self.trade_all = QCheckBox()
-        self.trade_all.setChecked( self.settings['strategy']['trade_all'] )
+        # trade_all = QLabel('Apply all presets to a new instrument')
+        # self.trade_all = QCheckBox()
+        # self.trade_all.setChecked( self.settings['strategy']['trade_all'] )
 
         flatten_eod = QLabel('Go flat EOD')
         self.flatten_eod = QCheckBox()
@@ -119,13 +121,13 @@ class Settings(QWidget):
         self.flatten_eod_seconds.setValue( self.settings['strategy']['flatten_eod_seconds'] )
         self.flatten_eod_seconds.setSuffix(" sec")
 
-        hist_excess = QLabel('History excess to download')
-        self.hist_excess = QSpinBox()
-        self.hist_excess.setRange(10,1000)
-        self.hist_excess.setMaximum(1000)
-        self.hist_excess.setFixedWidth(100)
-        self.hist_excess.setValue( self.settings['strategy']['hist_excess'] )
-        self.hist_excess.setSuffix(" %")
+        # hist_excess = QLabel('History excess to download')
+        # self.hist_excess = QSpinBox()
+        # self.hist_excess.setRange(10,1000)
+        # self.hist_excess.setMaximum(1000)
+        # self.hist_excess.setFixedWidth(100)
+        # self.hist_excess.setValue( self.settings['strategy']['hist_excess'] )
+        # self.hist_excess.setSuffix(" %")
 
         default_pos_size = QLabel('Default position size')
         self.default_pos_size = QSpinBox()
@@ -195,6 +197,26 @@ class Settings(QWidget):
         self.default_risk.setValue( self.settings['common']['risk'] )
         self.default_risk.setPrefix("$ ")
 
+        account = QLabel('Account')
+        account.setStyleSheet("QLabel{margin-top: 25px;}")
+        account_separator = QWidget()
+        account_separator.setFixedSize(self.width - self.widthSpacing, 1)
+        account_separator.setStyleSheet('QWidget{background-color: "#aaaaaa"; text-align: left; width:100%;}')
+
+        client_id = QLabel('Managed Account ID')
+        self.client_id = QLineEdit(self.settings['account']['accountId'])
+        self.client_id.setAlignment(Qt.AlignLeft)
+        self.client_id.setFixedSize(150,28)
+        self.client_id.setTextMargins(10, 1, 10, 1)
+
+        delayed_quotes = QLabel('Delayed Quotes')
+        self.use_delayed_quotes = QCheckBox()
+        self.use_delayed_quotes.setChecked( self.settings['account']['delayed_quotes'] )
+
+        animationLabel = QLabel('Animation')
+        self.useAnimation = QCheckBox()
+        self.useAnimation.setChecked( self.settings['common']['animation'] )
+
         button_panel = QHBoxLayout()
         button_panel.setContentsMargins(0, 50, 0, 0)
         cancelBtn = QPushButton('Cancel')
@@ -214,22 +236,22 @@ class Settings(QWidget):
         _l.addWidget(title, 0, 0, 1, 2, alignment=Qt.AlignTop|Qt.AlignRight)
         _l.addWidget(strategy, 1, 0, 1, 2, alignment=Qt.AlignBottom|Qt.AlignLeft)
         _l.addWidget(strategy_separator, 2, 0, 1, 2, alignment=Qt.AlignVCenter|Qt.AlignLeft)
-        _l.addWidget(timeframe, 3, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
-        _l.addWidget(self.timeframe_spinbox, 3, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
+        # _l.addWidget(timeframe, 3, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
+        # _l.addWidget(self.timeframe_spinbox, 3, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
         _l.addWidget(onlyRTH_history, 4, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
         _l.addWidget(self.use_only_RTH_data, 4, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
         _l.addWidget(onlyRTH_trading, 5, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
         _l.addWidget(self.use_only_RTH_trading, 5, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
-        _l.addWidget(trade_all, 6, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
-        _l.addWidget(self.trade_all, 6, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
+        # _l.addWidget(trade_all, 6, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
+        # _l.addWidget(self.trade_all, 6, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
         _l.addWidget(default_pos_size, 7, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
         _l.addWidget(self.default_pos_size, 7, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
         _l.addWidget(flatten_eod, 8, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
         _l.addWidget(self.flatten_eod, 8, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
         _l.addWidget(flatten_eod_seconds, 9, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
         _l.addWidget(self.flatten_eod_seconds, 9, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
-        _l.addWidget(hist_excess, 10, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
-        _l.addWidget(self.hist_excess, 10, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
+        # _l.addWidget(hist_excess, 10, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
+        # _l.addWidget(self.hist_excess, 10, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
 
         _l.addWidget(connection, 11, 0, 1, 2, alignment=Qt.AlignBottom|Qt.AlignLeft)
         _l.addWidget(separator, 12, 0, 1, 2, alignment=Qt.AlignVCenter|Qt.AlignLeft)
@@ -257,7 +279,15 @@ class Settings(QWidget):
         _l.addWidget(self.check_updates_checkbox, 26, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
         _l.addWidget(default_risk, 27, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
         _l.addWidget(self.default_risk, 27, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
-        _l.addLayout(button_panel, 28, 1, alignment=Qt.AlignVCenter|Qt.AlignRight)
+        _l.addWidget(account, 28, 0, 1, 2, alignment=Qt.AlignVCenter|Qt.AlignLeft)
+        _l.addWidget(account_separator, 29, 0, 1, 2, alignment=Qt.AlignVCenter|Qt.AlignLeft)
+        _l.addWidget(client_id, 30, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
+        _l.addWidget(self.client_id, 30, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
+        _l.addWidget(delayed_quotes, 31, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
+        _l.addWidget(self.use_delayed_quotes, 31, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
+        _l.addWidget(animationLabel, 32, 0, alignment=Qt.AlignVCenter|Qt.AlignRight)
+        _l.addWidget(self.useAnimation, 32, 1, alignment=Qt.AlignVCenter|Qt.AlignLeft)
+        _l.addLayout(button_panel, 33, 1, alignment=Qt.AlignVCenter|Qt.AlignRight)
 
 
         self.setWindowTitle("Settings")
@@ -283,11 +313,11 @@ class Settings(QWidget):
     def save(self):
         self.settings = {}
         self.settings['strategy'] = {}
-        self.settings['strategy']['timeframe'] = int(self.timeframe_spinbox.value())
+        # self.settings['strategy']['timeframe'] = int(self.timeframe_spinbox.value())
         self.settings['strategy']['onlyRTH_history'] = self.use_only_RTH_data.isChecked()
         self.settings['strategy']['onlyRTH_trading'] = self.use_only_RTH_trading.isChecked()
-        self.settings['strategy']['trade_all'] = self.trade_all.isChecked()
-        self.settings['strategy']['hist_excess'] = int(self.hist_excess.value())
+        # self.settings['strategy']['trade_all'] = self.trade_all.isChecked()
+        # self.settings['strategy']['hist_excess'] = int(self.hist_excess.value())
         self.settings['strategy']['pos_size'] = int(self.default_pos_size.value())
         self.settings['strategy']['flatten_eod'] = self.flatten_eod.isChecked()
         self.settings['strategy']['flatten_eod_seconds'] = int(self.flatten_eod_seconds.value())
@@ -302,9 +332,13 @@ class Settings(QWidget):
         self.settings['common'] = {}
         self.settings['common']['checkUpdates'] = self.check_updates_checkbox.isChecked()
         self.settings['common']['risk'] = int(self.default_risk.value())
+        self.settings['common']['animation'] = self.useAnimation.isChecked()
         self.settings['margin'] = {}
         self.settings['margin']['intraday'] = int(self.intraday_margin.value())
         self.settings['margin']['overnight'] = int(self.overnight_margin.value())
+        self.settings['account'] = {}
+        self.settings['account']['accountId'] = str(self.client_id.text()).upper()
+        self.settings['account']['delayed_quotes'] = self.use_delayed_quotes.isChecked()
 
         if self.settings['strategy']['onlyRTH_history'] and not self.settings['strategy']['onlyRTH_trading']:
             self.timeframe_error.emit()

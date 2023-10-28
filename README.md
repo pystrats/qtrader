@@ -26,3 +26,9 @@ python setup.py install
 ```
 ## 3. Install CUDA Toolkit
 Install an older version of CUDA Toolkit: 11.7-11.9. Version 12.0 and later are not supported. Download [SDK Installer](https://developer.nvidia.com/cuda-downloads) from NVIDIA Developer portal.
+
+# Known errors and solutions
+## qt.qpa.plugin: Could not load the Qt platform plugin "xcb" in "" even though it was found.
+```
+sudo apt-get install libxcb-xinerama0
+```

@@ -581,4 +581,4 @@ class DashWorker(QObject):
                         return [Fig, relOut]
 
             self.initiated = True
-            self.app.run_server(debug=False)
+            self.app.run_server(debug=True)

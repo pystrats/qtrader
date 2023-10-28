@@ -30,13 +30,13 @@
     "extendedSessionClose" : ""
   },
   "Thanksgiving Day" : {
-    "date" : "2023-10-23",
+    "date" : "2023-11-23",
     "closedAllDay" : true,
     "regularSessionClose" : "",
     "extendedSessionClose" : ""
   },
   "Day after Thanksgiving Day" : {
-    "date" : "2023-10-24",
+    "date" : "2023-11-24",
     "closedAllDay" : false,
     "regularSessionClose" : "01:00 PM",
     "extendedSessionClose" : "05:00 PM"
